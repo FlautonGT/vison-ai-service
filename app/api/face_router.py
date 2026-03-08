@@ -624,12 +624,28 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             logger.exception("CLIP branch failed")
             return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
 
+    def _run_deepfake_vit_v2_branch():
+        vit_v2 = getattr(models, "deepfake_vit_v2", None)
+        if not vit_v2 or not vit_v2.is_loaded:
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0
+        branch_input = ai_face_crop if ai_face_crop is not None and ai_face_crop.size > 0 else image
+        if branch_input is None or branch_input.size == 0:
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0
+        try:
+            start = time.perf_counter()
+            result = vit_v2.predict(branch_input)
+            return result, (time.perf_counter() - start) * 1000.0
+        except Exception:
+            logger.exception("Deepfake ViT v2 branch failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0
+
     # =================== RUN ALL BRANCHES IN PARALLEL ===================
     fs_future = GENERAL_EXECUTOR.submit(_branch_faceswap)
     npr_future = GENERAL_EXECUTOR.submit(_branch_npr)
     ai_p_future = GENERAL_EXECUTOR.submit(_branch_ai_primary)
     ai_e_future = GENERAL_EXECUTOR.submit(_branch_ai_extra)
     clip_future = GENERAL_EXECUTOR.submit(_branch_clip)
+    vit_v2_future = GENERAL_EXECUTOR.submit(_run_deepfake_vit_v2_branch)
 
     face_swap_result, fs_ms = fs_future.result()
     timings["deepfake_faceswap_ms"] = _round2(fs_ms)
@@ -651,6 +667,9 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     timings["deepfake_clip_full_ms"] = _round2(clip_full_ms)
     timings["deepfake_clip_crop_ms"] = _round2(clip_crop_ms)
     timings["deepfake_clip_ms"] = _round2(clip_full_ms + clip_crop_ms)
+
+    vit_v2_result, vit_v2_ms = vit_v2_future.result()
+    timings["deepfake_vit_v2_ms"] = _round2(vit_v2_ms)
     timings["jpeg_quality_estimate"] = float(jpeg_quality)
 
     # =================== EXTRACT SCORES ===================
@@ -659,6 +678,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     ai_primary_score = float(ai_primary_result.get("aiScore", 0.0))
     ai_extra_score = float(ai_extra_result.get("aiScore", 0.0))
     clip_score = float(clip_result.get("aiScore", 0.0))
+    vit_v2_score = float(vit_v2_result.get("aiScore", 0.0))
 
     # =================== STAGE 1: FAST SCREENING ===================
     # If both NPR and EfficientNet are very low confidence → early exit as real.
@@ -713,6 +733,9 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             ai_evidence_scores.append(clip_crop_score)
         if clip_score > 0.0:
             ai_evidence_scores.append(clip_score)
+    vit_v2_available = bool(getattr(models, "deepfake_vit_v2", None) and models.deepfake_vit_v2.is_loaded)
+    if vit_v2_available and vit_v2_score > 0.0:
+        ai_evidence_scores.append(vit_v2_score)
 
     # --- Adaptive weighting based on compression quality ---
     freq_penalty = float(settings.COMPRESSION_FREQ_WEIGHT_PENALTY)
@@ -723,12 +746,14 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     w_extra = max(0.0, float(settings.AI_FACE_EXTRA_WEIGHT))        # ai_vs_deepfake_vs_real
     w_npr = 0.25 if npr_available else 0.0
     w_clip = 0.35 if clip_available else 0.0
+    w_vit_v2 = max(0.0, float(settings.DEEPFAKE_VIT_V2_WEIGHT)) if vit_v2_available else 0.0
 
     if is_low_quality_jpeg:
         # Reduce frequency-domain model weights (EfficientNet, ViT) — they
         # confuse JPEG blocking artifacts with GAN artifacts.
         w_primary *= freq_penalty
         w_extra *= freq_penalty
+        w_vit_v2 *= freq_penalty
         # Boost compression-robust models.
         w_npr *= 1.3
         w_clip *= 1.2
@@ -737,6 +762,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         # Small faces benefit from crop-based scores.
         w_npr *= small_face_boost
         w_clip *= small_face_boost
+        w_vit_v2 *= small_face_boost
 
     # Compute weighted AI score.
     weighted_scores: list[tuple[float, float]] = []  # (weight, score)
@@ -748,6 +774,8 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         weighted_scores.append((w_npr, npr_score))
     if clip_available and timings["deepfake_clip_ms"] > 0.0:
         weighted_scores.append((w_clip, clip_score))
+    if vit_v2_available and timings["deepfake_vit_v2_ms"] > 0.0:
+        weighted_scores.append((w_vit_v2, vit_v2_score))
 
     if weighted_scores:
         weight_sum = sum(w for w, _ in weighted_scores)
@@ -760,12 +788,14 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
 
     # For small/far faces, prefer strongest AI evidence.
     if small_face_for_ai_crop:
-        ai_score = max(ai_score, ai_primary_score, ai_extra_score, clip_score, npr_score)
+        ai_score = max(ai_score, ai_primary_score, ai_extra_score, clip_score, npr_score, vit_v2_score)
     if settings.AI_FACE_ALWAYS_CROP_CHECK:
         all_crop_scores = [ai_primary_full_score, ai_primary_crop_score,
                            ai_extra_full_score, ai_extra_crop_score]
         if clip_available:
             all_crop_scores.extend([clip_full_score, clip_crop_score])
+        if vit_v2_available:
+            all_crop_scores.append(vit_v2_score)
         ai_score = max(ai_score, *all_crop_scores)
 
     # Linear calibration for environment-specific tuning (default is identity).
@@ -893,13 +923,13 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         logger.info(
             "Deepfake fusion: face_conf=%.2f small_face=%s jpeg_q=%d ai=%.2f "
             "ai_primary=%.2f (full=%.2f crop=%.2f) ai_extra=%.2f (full=%.2f crop=%.2f) "
-            "npr=%.2f clip=%.2f (full=%.2f crop=%.2f) fs=%.2f "
+            "npr=%.2f clip=%.2f (full=%.2f crop=%.2f) vit_v2=%.2f fs=%.2f "
             "hard_single=%s consensus_multi=%s(%d/%d) legacy_hard=%s vote=%s(%d/%d) "
             "real_suppressed=%s deepfake=%s",
             face_confidence, small_face_for_ai_crop, jpeg_quality, ai_score,
             ai_primary_score, ai_primary_full_score, ai_primary_crop_score,
             ai_extra_score, ai_extra_full_score, ai_extra_crop_score,
-            npr_score, clip_score, clip_full_score, clip_crop_score, face_swap_score,
+            npr_score, clip_score, clip_full_score, clip_crop_score, vit_v2_score, face_swap_score,
             ai_generated_hard_block, ai_generated_consensus_multi, consensus_count, consensus_min,
             ai_generated_legacy_hard, ai_generated_vote, vote_count, vote_min_count,
             likely_real_suppressed, is_deepfake,

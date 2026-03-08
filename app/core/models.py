@@ -132,6 +132,7 @@ class ModelRegistry:
         self.ai_face_detector_extra: Optional[AIFaceDetector] = None
         self.npr_detector: Optional[NPRDetector] = None
         self.clip_fake_detector: Optional[CLIPFakeDetector] = None
+        self.deepfake_vit_v2: Optional[DeepfakeVitV2Detector] = None
         self.cdcn_liveness: Optional[CDCNLiveness] = None
         self.face_parser: Optional[FaceParser] = None
         self.age_gender: Optional[AgeGenderEstimator] = None
@@ -289,6 +290,34 @@ class ModelRegistry:
             logger.warning("Failed to load CLIP fake detector, skipping", exc_info=True)
             self.clip_fake_detector = None
 
+        self.deepfake_vit_v2 = None
+        if settings.DEEPFAKE_VIT_V2_ENABLED:
+            deepfake_vit_v2_path = _resolve_model_path(
+                model_dir,
+                settings.DEEPFAKE_VIT_V2_MODEL,
+                settings.PREFER_INT8_MODELS,
+            )
+            deepfake_vit_v2_shared_session = deepfake_session_by_path.get(
+                _canonical_model_path(deepfake_vit_v2_path)
+            )
+            if deepfake_vit_v2_shared_session is not None:
+                logger.info("Deepfake ViT v2 sharing deepfake session: %s", deepfake_vit_v2_path)
+            try:
+                self.deepfake_vit_v2 = DeepfakeVitV2Detector(
+                    deepfake_vit_v2_path,
+                    providers=providers,
+                    threshold_percent=settings.DEEPFAKE_VIT_V2_THRESHOLD,
+                    shared_session=deepfake_vit_v2_shared_session,
+                )
+                if not self.deepfake_vit_v2.is_loaded:
+                    logger.info("Deepfake ViT v2 not available (model not found), skipping")
+                    self.deepfake_vit_v2 = None
+                else:
+                    logger.info("Deepfake ViT v2 loaded for deepfake fusion: %s", deepfake_vit_v2_path)
+            except Exception:
+                logger.warning("Failed to load Deepfake ViT v2, skipping", exc_info=True)
+                self.deepfake_vit_v2 = None
+
         cdcn_path = _resolve_model_path(model_dir, settings.CDCN_MODEL, settings.PREFER_INT8_MODELS)
         try:
             self.cdcn_liveness = CDCNLiveness(cdcn_path, providers=providers)
@@ -349,6 +378,7 @@ class ModelRegistry:
         self.ai_face_detector_extra = None
         self.npr_detector = None
         self.clip_fake_detector = None
+        self.deepfake_vit_v2 = None
         self.cdcn_liveness = None
         self.face_parser = None
         self.age_gender = None
@@ -379,6 +409,7 @@ class ModelRegistry:
             ),
             "nprDetector": bool(self.npr_detector and self.npr_detector.is_loaded),
             "clipFakeDetector": bool(self.clip_fake_detector and self.clip_fake_detector.is_loaded),
+            "deepfakeVitV2": bool(self.deepfake_vit_v2 and self.deepfake_vit_v2.is_loaded),
             "cdcnLiveness": bool(self.cdcn_liveness and self.cdcn_liveness.is_loaded),
             "faceParser": bool(self.face_parser and self.face_parser.session is not None),
             "ageGender": bool(self.age_gender and self.age_gender.is_loaded),
@@ -1163,6 +1194,7 @@ class DeepfakeDetector:
         if (
             "community_forensics" in model_name
             or "deep_fake_detector_v2" in model_name
+            or "deepfake_vit_v2" in model_name
             or "deepfake_efficientnet_b0" in model_name
         ):
             return 0
@@ -1202,6 +1234,7 @@ class DeepfakeDetector:
         if (
             "deep_fake_detector_v2" in model_name
             or "deep-fake-detector-v2" in model_name
+            or "deepfake_vit_v2" in model_name
             or "deepfake_efficientnet_b0" in model_name
         ):
             if is_nhwc:
@@ -1508,6 +1541,117 @@ class AIFaceDetector:
             }
         except Exception:
             logger.exception("AI face detector inference failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}
+
+
+class DeepfakeVitV2Detector:
+    """Dedicated wrapper for the DeepFake ViT v2 ONNX classifier."""
+
+    def __init__(
+        self,
+        model_path: str,
+        providers: Optional[list] = None,
+        threshold_percent: float = 60.0,
+        shared_session=None,
+    ):
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.providers = providers or ["CPUExecutionProvider"]
+        self.threshold_percent = max(0.0, min(100.0, float(threshold_percent)))
+        self.threshold = self.threshold_percent / 100.0
+        self.input_name = "input"
+        self.input_width = 224
+        self.input_height = 224
+        self.is_nhwc = False
+
+        if ort is None:
+            logger.warning("onnxruntime is not available; Deepfake ViT v2 disabled")
+            return
+        if shared_session is None and not os.path.exists(model_path):
+            logger.warning("Deepfake ViT v2 model not found: %s", model_path)
+            return
+
+        if shared_session is not None:
+            self.session = shared_session
+        else:
+            try:
+                self.session = _create_session(model_path, providers=self.providers)
+            except Exception:
+                logger.warning("Failed to load Deepfake ViT v2 model: %s", model_path, exc_info=True)
+                self.session = None
+                return
+
+        self.model_name = os.path.basename(getattr(self.session, "_model_path", model_path))
+        input_meta = self.session.get_inputs()[0]
+        self.input_name = input_meta.name
+        input_shape = list(input_meta.shape)
+        if len(input_shape) == 4:
+            self.is_nhwc = input_shape[-1] == 3
+            if self.is_nhwc:
+                raw_h, raw_w = input_shape[1], input_shape[2]
+            else:
+                raw_h, raw_w = input_shape[2], input_shape[3]
+            if isinstance(raw_h, int) and raw_h > 0:
+                self.input_height = raw_h
+            if isinstance(raw_w, int) and raw_w > 0:
+                self.input_width = raw_w
+
+        logger.info(
+            "Deepfake ViT v2 loaded: %s input=%s threshold=%.2f%%",
+            model_path,
+            input_shape,
+            self.threshold_percent,
+        )
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def _preprocess(self, image_bgr: np.ndarray) -> np.ndarray:
+        resized = cv2.resize(image_bgr, (self.input_width, self.input_height), interpolation=cv2.INTER_CUBIC)
+        resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        resized = (resized - mean) / std
+        if self.is_nhwc:
+            return resized[np.newaxis, ...].astype(np.float32)
+        return resized.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    @staticmethod
+    def _extract_fake_probability(output_tensor: np.ndarray) -> float:
+        output = np.asarray(output_tensor, dtype=np.float32)
+        if output.size == 0:
+            raise ValueError("Deepfake ViT v2 output is empty")
+        if output.ndim >= 2 and output.shape[0] == 1:
+            output = output[0]
+        output = output.reshape(-1)
+        if output.size == 1:
+            return float(1.0 / (1.0 + np.exp(-output[0])))
+        probs = _softmax(output[:2].reshape(1, -1))[0]
+        return float(probs[0])
+
+    def predict(self, image_bgr: np.ndarray) -> dict:
+        if self.session is None or image_bgr is None or image_bgr.size == 0:
+            return {"isAIGenerated": False, "aiScore": 0.0}
+
+        try:
+            blob = self._preprocess(image_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            fake_prob = 0.0
+            for output in outputs:
+                try:
+                    fake_prob = self._extract_fake_probability(output)
+                    break
+                except Exception:
+                    continue
+            fake_prob = max(0.0, min(1.0, float(fake_prob)))
+            return {
+                "isAIGenerated": fake_prob >= self.threshold,
+                "aiScore": round(fake_prob * 100.0, 2),
+            }
+        except Exception:
+            logger.exception("Deepfake ViT v2 inference failed")
             return {"isAIGenerated": False, "aiScore": 0.0}
 
 

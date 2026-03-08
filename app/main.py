@@ -98,6 +98,12 @@ async def _warmup_models(registry: ModelRegistry):
         logger.exception("CLIP fake detector warmup failed")
 
     try:
+        if registry.deepfake_vit_v2 and registry.deepfake_vit_v2.is_loaded:
+            registry.deepfake_vit_v2.predict(dummy_face_hires)
+    except Exception:
+        logger.exception("Deepfake ViT v2 warmup failed")
+
+    try:
         if registry.cdcn_liveness and registry.cdcn_liveness.is_loaded:
             registry.cdcn_liveness.predict(dummy_face)
     except Exception:
@@ -265,6 +271,10 @@ async def health():
     npr_loaded = bool(registry and registry.npr_detector and registry.npr_detector.is_loaded) if registry else False
     clip_fake_model = settings.CLIP_FAKE_MODEL
     clip_fake_loaded = bool(registry and registry.clip_fake_detector and registry.clip_fake_detector.is_loaded) if registry else False
+    deepfake_vit_v2_model = settings.DEEPFAKE_VIT_V2_MODEL
+    deepfake_vit_v2_loaded = bool(registry and registry.deepfake_vit_v2 and registry.deepfake_vit_v2.is_loaded) if registry else False
+    if deepfake_vit_v2_loaded:
+        deepfake_vit_v2_model = registry.deepfake_vit_v2.model_name
     cdcn_model = settings.CDCN_MODEL
     cdcn_loaded = bool(registry and registry.cdcn_liveness and registry.cdcn_liveness.is_loaded) if registry else False
 
@@ -308,6 +318,10 @@ async def health():
         "clip_fake_detector": {
             "loaded": clip_fake_loaded,
             "model": clip_fake_model,
+        },
+        "deepfake_vit_v2": {
+            "loaded": deepfake_vit_v2_loaded,
+            "model": deepfake_vit_v2_model,
         },
         "cdcn_liveness": {
             "loaded": cdcn_loaded,

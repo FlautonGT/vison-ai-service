@@ -156,6 +156,12 @@ class Settings:
     CLIP_FAKE_MODEL: str = os.getenv("CLIP_FAKE_MODEL", "universal_fake_detect.onnx")
     CLIP_FAKE_THRESHOLD: float = float(os.getenv("CLIP_FAKE_THRESHOLD", "0.50"))
 
+    # Deepfake ViT v2
+    DEEPFAKE_VIT_V2_MODEL: str = os.getenv("DEEPFAKE_VIT_V2_MODEL", "deepfake_vit_v2.onnx")
+    DEEPFAKE_VIT_V2_ENABLED: bool = os.getenv("DEEPFAKE_VIT_V2_ENABLED", "true").lower() == "true"
+    DEEPFAKE_VIT_V2_THRESHOLD: float = float(os.getenv("DEEPFAKE_VIT_V2_THRESHOLD", "60.0"))
+    DEEPFAKE_VIT_V2_WEIGHT: float = float(os.getenv("DEEPFAKE_VIT_V2_WEIGHT", "0.35"))
+
     # CDCN liveness
     CDCN_MODEL: str = os.getenv("CDCN_MODEL", "cdcn_liveness.onnx")
     CDCN_THRESHOLD: float = float(os.getenv("CDCN_THRESHOLD", "0.50"))
