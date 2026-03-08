@@ -1,0 +1,17 @@
+.env
+.env.*
+.git/
+.gitignore
+venv/
+models/
+benchmark_data/
+benchmark_reports/
+tmp_wheels/
+__pycache__/
+*.pyc
+*.pyo
+*.onnx
+*.md
+Makefile
+docker-compose.yml
+.dockerignore

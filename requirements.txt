@@ -1,0 +1,19 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+
+# Image processing
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+Pillow==11.1.0
+
+# AI inference (CPU)
+onnxruntime==1.20.1
+# For GPU deployment use:
+# onnxruntime-gpu==1.20.1
+# Optional primary backend for age/gender (Linux production)
+insightface==0.7.3; platform_system != "Windows"
+
+# HTTP clients for tests and model scripts
+requests==2.32.3

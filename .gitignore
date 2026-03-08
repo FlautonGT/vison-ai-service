@@ -1,0 +1,51 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!.env.production
+
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.dll
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# ONNX models / large binaries
+models/*.onnx
+models/models/
+/opt/models/
+
+# Generated benchmark/test artifacts
+benchmark_data/
+benchmark_reports/
+tmp_wheels/
+*.log
+server-stdout.log
+server-stderr.log
+server_smoke_stdout.log
+server_smoke_stderr.log
+benchmark_run_stdout.log
+benchmark_run_stderr.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

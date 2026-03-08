@@ -1,0 +1,82 @@
+services:
+  face-ai:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./models:/opt/models:ro
+    env_file:
+      - .env.production
+    environment:
+      - MODEL_DIR=/opt/models
+      - ONNX_PROVIDERS=CPUExecutionProvider
+      - SCRFD_INPUT_SIZE=640
+      - PREFER_INT8_MODELS=true
+      - AI_SERVICE_SECRET=${AI_SERVICE_SECRET}
+      - DEEPFAKE_MODELS=deepfake_efficientnet_b0.onnx,community_forensics_vit.onnx
+      - ARCFACE_MODEL=glintr100.onnx
+      - ARCFACE_EXTRA_MODEL=w600k_r50.onnx
+      - ARCFACE_PRIMARY_WEIGHT=0.65
+      - ARCFACE_EXTRA_WEIGHT=0.35
+      - COMPARE_PARALLEL_EMBEDDING=true
+      - COMPARE_THRESHOLD_DEFAULT=74
+      - SIMILARITY_CALIBRATION_ENABLED=true
+      - SIMILARITY_CALIBRATION_START=75
+      - SIMILARITY_CALIBRATION_GAIN=1.6
+      - SIMILARITY_CALIBRATION_POWER=0.75
+      - SIMILARITY_CALIBRATION_CAP=99.99
+      - AI_FACE_DETECTOR_MODEL=deepfake_efficientnet_b0.onnx
+      - AI_FACE_EXTRA_DETECTOR_MODEL=ai_vs_deepfake_vs_real.onnx
+      - AI_FACE_THRESHOLD=68
+      - AI_FACE_LOW_CONF_THRESHOLD=12
+      - AI_FACE_LOW_CONF_FACE_CONF=70
+      - AI_FACE_PRIMARY_WEIGHT=0.7
+      - AI_FACE_EXTRA_WEIGHT=0.3
+      - AI_FACE_CALIBRATION_ALPHA=1.0
+      - AI_FACE_CALIBRATION_BETA=0.0
+      - AI_FACE_CONSENSUS_AI_THRESHOLD=80
+      - AI_FACE_CONSENSUS_FACE_SWAP_THRESHOLD=55
+      - AI_FACE_REAL_SUPPRESS_ENABLED=true
+      - AI_FACE_REAL_SUPPRESS_FACE_CONF=72
+      - AI_FACE_REAL_SUPPRESS_AI_MAX=88
+      - AI_FACE_REAL_SUPPRESS_FACE_SWAP_MAX=62
+      - DEEPFAKE_FACE_SWAP_STRONG_THRESHOLD=95
+      - LIVENESS_MODELS=MiniFASNetV2.onnx,MiniFASNetV1SE.onnx
+      - AGE_GENDER_VIT_MODEL=age_gender_vit.onnx
+      - AGE_GENDER_PRIMARY_WEIGHT=0.5
+      - AGE_GENDER_VIT_WEIGHT=0.5
+      - AGE_GENDER_MALE_THRESHOLD=0.4
+      - QUALITY_POSE_MAX_ABS_DEG=15
+      - QUALITY_MIN_INTER_EYE_PX=60
+      - QUALITY_MAX_ILLUM_ASYMMETRY=30
+      - QUALITY_MIN_CONTRAST=18
+      - FACE_MIN_AREA_RATIO=0.05
+      - FACE_MIN_AREA_RATIO_HARD=0.003
+      - FACE_MIN_PIXELS_HARD=20
+      - ALLOW_SMALL_FACE_AUTOCROP=true
+      - PRE_CROPPED_MIN_DIM=40
+      - PRE_CROPPED_ASPECT_MIN=0.5
+      - PRE_CROPPED_ASPECT_MAX=2.0
+      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTER_OP_THREADS=1
+      - ONNX_OPT_LEVEL=all
+      - ONNX_EXECUTION_MODE=parallel
+      - FACE_AI_WORKERS=2
+      - LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4.0"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
