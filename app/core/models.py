@@ -43,6 +43,8 @@ def _build_session_options():
     from app.core.config import settings
 
     options = ort.SessionOptions()
+    options.enable_mem_pattern = True
+    options.enable_cpu_mem_arena = True
     if settings.ONNX_INTRA_OP_THREADS > 0:
         options.intra_op_num_threads = int(settings.ONNX_INTRA_OP_THREADS)
     if settings.ONNX_INTER_OP_THREADS > 0:
@@ -1411,7 +1413,7 @@ class DeepfakeDetector:
             "isDeepfake": is_deepfake,
             "attackRiskLevel": risk,
             "attackTypes": attack_types,
-            "score": round(avg_fake * 100.0, 2),
+            "score": round(max(0.0, avg_fake) * 100.0, 2),
         }
 
 
@@ -2813,8 +2815,12 @@ class AgeGenderEstimator:
             race = str(tertiary["race"]).upper()
         if race:
             sea_max = float(_cfg.AGE_CORRECTION_SEA_YOUNG_MAX_AGE)
-            if race == "SOUTHEAST_ASIAN" and fused_age <= sea_max:
-                fused_age += float(_cfg.AGE_CORRECTION_SEA_YOUNG_OFFSET)
+            sea_offset = max(0.0, float(_cfg.AGE_CORRECTION_SEA_YOUNG_OFFSET))
+            if race == "SOUTHEAST_ASIAN":
+                if fused_age <= 22.0:
+                    fused_age += sea_offset
+                elif fused_age <= sea_max:
+                    fused_age += min(sea_offset, 0.5)
             elif race == "EAST_ASIAN" and fused_age <= sea_max:
                 fused_age += float(_cfg.AGE_CORRECTION_EAST_ASIAN_YOUNG_OFFSET)
             elif race == "INDIAN" and fused_age > 50.0:

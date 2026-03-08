@@ -75,6 +75,16 @@ def _round2(value: float) -> float:
     return round(float(value), 2)
 
 
+def _non_negative_score(value: float) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(score):
+        return 0.0
+    return max(0.0, score)
+
+
 async def _run_in_executor(executor, func, *args, **kwargs):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
@@ -103,7 +113,7 @@ def _build_face_payload(face, models) -> dict:
 
     # SCRFD raw scores are typically 0.5-0.99 range.  Scale to AWS-comparable
     # confidence where clearly-detected faces report 99-100%.
-    raw_pct = face.score * 100.0
+    raw_pct = _non_negative_score(face.score) * 100.0
     if raw_pct >= 80.0:
         # SCRFD 80-100 → report 97-100 (clearly visible face)
         confidence = 97.0 + ((raw_pct - 80.0) / 20.0) * 3.0
@@ -116,7 +126,7 @@ def _build_face_payload(face, models) -> dict:
         confidence = raw_pct * 1.4
     return {
         "detected": face.face_detected,
-        "confidence": _round2(confidence),
+        "confidence": _round2(_non_negative_score(confidence)),
         "boundingBox": face.bounding_box_relative,
         "landmarks": face.landmarks_relative,
     }
@@ -255,7 +265,10 @@ def _resolve_compare_threshold(
     if strategy == "fixed" or source_quality is None or target_quality is None:
         return threshold
 
-    avg_quality = float(source_quality.get("score", 0.0) + target_quality.get("score", 0.0)) * 0.5
+    avg_quality = (
+        _non_negative_score(source_quality.get("score", 0.0))
+        + _non_negative_score(target_quality.get("score", 0.0))
+    ) * 0.5
     low = float(settings.ARCFACE_ADAPTIVE_LOW)
     high = float(settings.ARCFACE_ADAPTIVE_HIGH)
 
@@ -517,7 +530,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     if ai_face_crop is not None and ai_face_crop.size > 0:
         ai_face_crop_normalized = normalize_lighting(ai_face_crop)
 
-    face_confidence = float(face.score * 100.0) if face is not None else 0.0
+    face_confidence = _non_negative_score(face.score) * 100.0 if face is not None else 0.0
 
     # =================== PARALLEL BRANCH DEFINITIONS ===================
 
@@ -528,6 +541,8 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         try:
             start = time.perf_counter()
             result = models.deepfake_detector.predict(deepfake_face_crop)
+            result = dict(result)
+            result["score"] = _non_negative_score(result.get("score", 0.0))
             return result, (time.perf_counter() - start) * 1000.0
         except Exception:
             logger.exception("Face-swap detector branch failed")
@@ -558,14 +573,14 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             start = time.perf_counter()
             result = ai_detector.predict(image)
             full_ms = (time.perf_counter() - start) * 1000.0
-            full_score = float(result.get("aiScore", 0.0))
+            full_score = _non_negative_score(result.get("aiScore", 0.0))
             crop_ms = 0.0
             crop_score = 0.0
             if do_crop_check and ai_face_crop is not None:
                 start = time.perf_counter()
                 crop_result = ai_detector.predict(ai_face_crop)
                 crop_ms = (time.perf_counter() - start) * 1000.0
-                crop_score = float(crop_result.get("aiScore", 0.0))
+                crop_score = _non_negative_score(crop_result.get("aiScore", 0.0))
                 if crop_score > full_score:
                     result = crop_result
             return result, full_ms, crop_ms, full_score, crop_score
@@ -582,14 +597,14 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             start = time.perf_counter()
             result = ai_detector_extra.predict(image)
             full_ms = (time.perf_counter() - start) * 1000.0
-            full_score = float(result.get("aiScore", 0.0))
+            full_score = _non_negative_score(result.get("aiScore", 0.0))
             crop_ms = 0.0
             crop_score = 0.0
             if do_crop_check and ai_face_crop is not None:
                 start = time.perf_counter()
                 crop_result = ai_detector_extra.predict(ai_face_crop)
                 crop_ms = (time.perf_counter() - start) * 1000.0
-                crop_score = float(crop_result.get("aiScore", 0.0))
+                crop_score = _non_negative_score(crop_result.get("aiScore", 0.0))
                 if crop_score > full_score:
                     result = crop_result
             return result, full_ms, crop_ms, full_score, crop_score
@@ -607,7 +622,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             start = time.perf_counter()
             full_result = clip_det.predict(image)
             full_ms = (time.perf_counter() - start) * 1000.0
-            full_score = float(full_result.get("aiScore", 0.0))
+            full_score = _non_negative_score(full_result.get("aiScore", 0.0))
             # Run on face crop
             crop_ms = 0.0
             crop_score = 0.0
@@ -616,7 +631,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
                 start = time.perf_counter()
                 crop_result = clip_det.predict(ai_face_crop)
                 crop_ms = (time.perf_counter() - start) * 1000.0
-                crop_score = float(crop_result.get("aiScore", 0.0))
+                crop_score = _non_negative_score(crop_result.get("aiScore", 0.0))
                 if crop_score > full_score:
                     best_result = crop_result
             return best_result, full_ms, crop_ms, full_score, crop_score
@@ -634,6 +649,8 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         try:
             start = time.perf_counter()
             result = vit_v2.predict(branch_input)
+            result = dict(result)
+            result["aiScore"] = _non_negative_score(result.get("aiScore", 0.0))
             return result, (time.perf_counter() - start) * 1000.0
         except Exception:
             logger.exception("Deepfake ViT v2 branch failed")
@@ -673,12 +690,12 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     timings["jpeg_quality_estimate"] = float(jpeg_quality)
 
     # =================== EXTRACT SCORES ===================
-    face_swap_score = float(face_swap_result.get("score", 0.0))
-    npr_score = float(npr_result.get("fakeScore", 0.0))
-    ai_primary_score = float(ai_primary_result.get("aiScore", 0.0))
-    ai_extra_score = float(ai_extra_result.get("aiScore", 0.0))
-    clip_score = float(clip_result.get("aiScore", 0.0))
-    vit_v2_score = float(vit_v2_result.get("aiScore", 0.0))
+    face_swap_score = _non_negative_score(face_swap_result.get("score", 0.0))
+    npr_score = _non_negative_score(npr_result.get("fakeScore", 0.0))
+    ai_primary_score = _non_negative_score(ai_primary_result.get("aiScore", 0.0))
+    ai_extra_score = _non_negative_score(ai_extra_result.get("aiScore", 0.0))
+    clip_score = _non_negative_score(clip_result.get("aiScore", 0.0))
+    vit_v2_score = _non_negative_score(vit_v2_result.get("aiScore", 0.0))
 
     # =================== STAGE 1: FAST SCREENING ===================
     # If both NPR and EfficientNet are very low confidence → early exit as real.
@@ -701,8 +718,8 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             "attackRiskLevel": "LOW_RISK",
             "attackTypes": [],
             "scores": {
-                "faceSwapScore": _round2(face_swap_score),
-                "aiGeneratedScore": _round2(max(npr_score, ai_primary_score)),
+                "faceSwapScore": _round2(_non_negative_score(face_swap_score)),
+                "aiGeneratedScore": _round2(_non_negative_score(max(npr_score, ai_primary_score))),
             },
         }
         if settings.DEBUG:
@@ -915,8 +932,8 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         "attackRiskLevel": risk,
         "attackTypes": attack_types,
         "scores": {
-            "faceSwapScore": _round2(face_swap_score),
-            "aiGeneratedScore": _round2(ai_score),
+            "faceSwapScore": _round2(_non_negative_score(face_swap_score)),
+            "aiGeneratedScore": _round2(_non_negative_score(ai_score)),
         },
     }
     if settings.DEBUG:
@@ -1231,6 +1248,7 @@ async def liveness_check(
         return models.liveness_checker.predict(processor.for_liveness())
 
     live_score, is_live = await _run_in_executor(GENERAL_EXECUTOR, _predict_liveness_sync)
+    live_score = _non_negative_score(live_score)
     timings["liveness_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     response_payload = {
         "isLive": is_live,
@@ -1293,11 +1311,15 @@ async def deepfake_check(
     )
     timings["deepfake_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     timings.update(fusion_timings)
+    result_scores = result.get("scores", {"faceSwapScore": 0.0, "aiGeneratedScore": 0.0})
     response_payload = {
         "isDeepfake": result["isDeepfake"],
         "attackRiskLevel": result["attackRiskLevel"],
         "attackTypes": result["attackTypes"],
-        "scores": result.get("scores", {"faceSwapScore": 0.0, "aiGeneratedScore": 0.0}),
+        "scores": {
+            "faceSwapScore": _round2(_non_negative_score(result_scores.get("faceSwapScore", 0.0))),
+            "aiGeneratedScore": _round2(_non_negative_score(result_scores.get("aiGeneratedScore", 0.0))),
+        },
         "face": _build_face_payload(face, models),
         "validation": await _run_in_executor(
             GENERAL_EXECUTOR,
@@ -1435,6 +1457,7 @@ async def verify_live(
         """Run MiniFASNet ensemble + optional CDCN, return fused score."""
         start = time.perf_counter()
         minifas_score, minifas_live = models.liveness_checker.predict(live_crop)
+        minifas_score = _non_negative_score(minifas_score)
 
         cdcn = getattr(models, "cdcn_liveness", None)
         cdcn_score = 0.0
@@ -1442,6 +1465,7 @@ async def verify_live(
         if cdcn is not None and cdcn.is_loaded:
             try:
                 cdcn_score, cdcn_live = cdcn.predict(live_crop)
+                cdcn_score = _non_negative_score(cdcn_score)
             except Exception:
                 logger.exception("CDCN liveness failed, using MiniFASNet only")
 
@@ -1459,6 +1483,7 @@ async def verify_live(
             fused_score = minifas_score
             fused_live = minifas_live
 
+        fused_score = _non_negative_score(fused_score)
         elapsed = (time.perf_counter() - start) * 1000.0
         return (fused_score, fused_live), elapsed
 
@@ -1497,7 +1522,11 @@ async def verify_live(
 
     quality_gate_passed = True
     if settings.VERIFY_LIVE_QUALITY_GATE:
-        quality_gate_passed = float(quality.get("score", 0.0)) >= float(settings.VERIFY_LIVE_QUALITY_MIN_SCORE)
+        quality_gate_passed = _non_negative_score(quality.get("score", 0.0)) >= float(
+            settings.VERIFY_LIVE_QUALITY_MIN_SCORE
+        )
+
+    live_score = _non_negative_score(live_score)
 
     final_is_live = bool(
         liveness_is_live

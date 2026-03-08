@@ -194,10 +194,10 @@ class Settings:
 
     # Race-aware age correction (Phase 2)
     AGE_CORRECTION_SEA_YOUNG_OFFSET: float = float(
-        os.getenv("AGE_CORRECTION_SEA_YOUNG_OFFSET", "4.0")
+        os.getenv("AGE_CORRECTION_SEA_YOUNG_OFFSET", "1.5")
     )
     AGE_CORRECTION_SEA_YOUNG_MAX_AGE: float = float(
-        os.getenv("AGE_CORRECTION_SEA_YOUNG_MAX_AGE", "35.0")
+        os.getenv("AGE_CORRECTION_SEA_YOUNG_MAX_AGE", "30.0")
     )
     AGE_CORRECTION_EAST_ASIAN_YOUNG_OFFSET: float = float(
         os.getenv("AGE_CORRECTION_EAST_ASIAN_YOUNG_OFFSET", "3.0")
