@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from functools import wraps
+from functools import partial, wraps
 from typing import Optional
 
 import cv2
@@ -73,6 +73,15 @@ def _parse_bool_form(value: Optional[str]) -> bool:
 
 def _round2(value: float) -> float:
     return round(float(value), 2)
+
+
+async def _run_in_executor(executor, func, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
+
+
+async def _await_submitted(*futures):
+    return await asyncio.gather(*(asyncio.wrap_future(future) for future in futures))
 
 
 def _set_request_observability(request: Request, model_timings: Optional[dict] = None, result_summary: Optional[dict] = None):
@@ -197,6 +206,72 @@ def _resize_for_detection(image: np.ndarray, max_dim: int = DETECTION_MAX_DIM_RE
     new_height = max(1, int(round(height * scale)))
     resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
     return resized, scale
+
+
+def _maybe_equalize_for_detection(image: np.ndarray) -> np.ndarray:
+    if not settings.SCRFD_PRE_EQUALIZE or image is None or image.size == 0:
+        return image
+
+    threshold = float(settings.SCRFD_PRE_EQUALIZE_BRIGHTNESS_THRESHOLD)
+    try:
+        if image.ndim == 2:
+            brightness = float(image.mean())
+            if brightness >= threshold:
+                return image
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            logger.info(
+                "Applied grayscale SCRFD pre-equalization: brightness=%.1f threshold=%.1f",
+                brightness,
+                threshold,
+            )
+            return clahe.apply(image)
+
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        brightness = float(hsv[:, :, 2].mean())
+        if brightness >= threshold:
+            return image
+
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        logger.info(
+            "Applied SCRFD pre-equalization: brightness=%.1f threshold=%.1f",
+            brightness,
+            threshold,
+        )
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    except Exception:
+        logger.exception("SCRFD pre-equalization failed")
+        return image
+
+
+def _resolve_compare_threshold(
+    base_threshold: float,
+    source_quality: Optional[dict],
+    target_quality: Optional[dict],
+) -> float:
+    threshold = float(base_threshold)
+    strategy = settings.ARCFACE_ADAPTIVE_STRATEGY.strip().lower()
+    if strategy == "fixed" or source_quality is None or target_quality is None:
+        return threshold
+
+    avg_quality = float(source_quality.get("score", 0.0) + target_quality.get("score", 0.0)) * 0.5
+    low = float(settings.ARCFACE_ADAPTIVE_LOW)
+    high = float(settings.ARCFACE_ADAPTIVE_HIGH)
+
+    if strategy == "permissive":
+        if avg_quality < 50.0:
+            return min(threshold, low)
+        return threshold
+
+    if strategy not in ("", "conservative"):
+        logger.warning("Unknown ARCFACE_ADAPTIVE_STRATEGY=%s, using conservative", strategy)
+
+    if avg_quality > 80.0:
+        return max(threshold, high)
+    if avg_quality < 50.0:
+        return max(threshold, low)
+    return threshold
 
 
 def _map_faces_to_original(
@@ -353,16 +428,17 @@ def _detect_faces_with_tiling(image: np.ndarray, models, deadline: float = 0.0) 
 def _detect_faces_with_retries(image: np.ndarray, models, enable_retries: bool = True) -> list[FaceDetectionResult]:
     start = time.perf_counter()
     deadline = start + DETECTION_TIME_BUDGET_SEC
+    detect_image = _maybe_equalize_for_detection(image)
 
-    faces = models.face_detector.detect_all(image)
+    faces = models.face_detector.detect_all(detect_image)
     if faces:
         return faces
 
     if not enable_retries:
         return []
 
-    height, width = image.shape[:2]
-    resized, scale = _resize_for_detection(image, DETECTION_MAX_DIM_RETRY)
+    height, width = detect_image.shape[:2]
+    resized, scale = _resize_for_detection(detect_image, DETECTION_MAX_DIM_RETRY)
     if scale < 1.0 and time.perf_counter() < deadline:
         faces = models.face_detector.detect_all(resized)
         if faces:
@@ -379,7 +455,7 @@ def _detect_faces_with_retries(image: np.ndarray, models, enable_retries: bool =
         if time.perf_counter() >= deadline:
             logger.info("Face detection retry budget exhausted after %.0fms", (time.perf_counter() - start) * 1000)
             return []
-        faces = models.face_detector.detect_all(image, score_threshold=threshold)
+        faces = models.face_detector.detect_all(detect_image, score_threshold=threshold)
         if faces:
             logger.info("Face detection recovered with lower threshold=%.2f", threshold)
             return faces
@@ -393,7 +469,7 @@ def _detect_faces_with_retries(image: np.ndarray, models, enable_retries: bool =
                 return _map_faces_to_original(resized_faces, scale, width, height)
 
     if time.perf_counter() < deadline:
-        faces = _detect_faces_with_tiling(image, models, deadline=deadline)
+        faces = _detect_faces_with_tiling(detect_image, models, deadline=deadline)
         if faces:
             return faces
 
@@ -404,74 +480,162 @@ def _detect_faces_with_retries(image: np.ndarray, models, enable_retries: bool =
 
 
 def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProcessor], face: Optional[FaceDetectionResult]):
+    """3-stage cascade AI/deepfake detection with compression awareness.
+
+    Stage 1: Fast screening (NPR + EfficientNet). If both < fast_exit → early return real.
+    Stage 2: CLIP-based UniversalFakeDetect (if available).
+    Stage 3: Adaptive weighted fusion with compression awareness, small-face boost,
+             hard-block, and consensus rules.
+    """
+    from app.services.face_processing import estimate_jpeg_quality_from_array, normalize_lighting
+
     timings: dict[str, float] = {}
 
-    # Pre-compute crop once (cached in processor).
+    # Pre-compute crops once (cached in processor).
     deepfake_face_crop = processor.for_deepfake() if processor is not None else None
+    # Use artifact-preserving bbox crop for AI detection (NOT ArcFace-aligned).
+    ai_face_crop = processor.for_ai_detection() if processor is not None else None
 
-    ai_face_crop = None
     small_face_for_ai_crop = False
-    if processor is not None and face is not None:
-        ai_face_crop = deepfake_face_crop
-        small_face_for_ai_crop = _face_area_ratio(face, image) < float(settings.FACE_MIN_AREA_RATIO)
+    face_area = 0.0
+    if face is not None:
+        face_area = _face_area_ratio(face, image)
+        small_face_for_ai_crop = face_area < float(settings.FACE_MIN_AREA_RATIO)
 
-    do_crop_check = (settings.AI_FACE_ALWAYS_CROP_CHECK or small_face_for_ai_crop) and ai_face_crop is not None and ai_face_crop.size > 0
+    do_crop_check = (
+        (settings.AI_FACE_ALWAYS_CROP_CHECK or small_face_for_ai_crop)
+        and ai_face_crop is not None
+        and ai_face_crop.size > 0
+    )
 
-    # --- Branch 1: Face-swap detector ---
+    # Estimate JPEG compression quality from pixel statistics.
+    jpeg_quality = estimate_jpeg_quality_from_array(image)
+    is_low_quality_jpeg = jpeg_quality < int(settings.JPEG_QUALITY_LOW_THRESHOLD)
+
+    # For low-light images, prepare a lighting-normalized crop for AI detection.
+    ai_face_crop_normalized = None
+    if ai_face_crop is not None and ai_face_crop.size > 0:
+        ai_face_crop_normalized = normalize_lighting(ai_face_crop)
+
+    face_confidence = float(face.score * 100.0) if face is not None else 0.0
+
+    # =================== PARALLEL BRANCH DEFINITIONS ===================
+
+    # --- Branch 1: Face-swap detector (uses ArcFace-aligned crop — correct for face swaps) ---
     def _branch_faceswap():
         if deepfake_face_crop is None:
             return {"isDeepfake": False, "attackRiskLevel": "LOW_RISK", "attackTypes": [], "score": 0.0}, 0.0
-        start = time.perf_counter()
-        result = models.deepfake_detector.predict(deepfake_face_crop)
-        return result, (time.perf_counter() - start) * 1000.0
+        try:
+            start = time.perf_counter()
+            result = models.deepfake_detector.predict(deepfake_face_crop)
+            return result, (time.perf_counter() - start) * 1000.0
+        except Exception:
+            logger.exception("Face-swap detector branch failed")
+            return {"isDeepfake": False, "attackRiskLevel": "LOW_RISK", "attackTypes": [], "score": 0.0}, 0.0
 
-    # --- Branch 2: AI primary detector (full + crop) ---
+    # --- Branch 2: NPR detector (fast, compression-robust) ---
+    def _branch_npr():
+        npr = getattr(models, "npr_detector", None)
+        if not npr or not npr.is_loaded:
+            return {"isFake": False, "fakeScore": 0.0}, 0.0
+        crop = ai_face_crop_normalized if ai_face_crop_normalized is not None else ai_face_crop
+        if crop is None or crop.size == 0:
+            return {"isFake": False, "fakeScore": 0.0}, 0.0
+        try:
+            start = time.perf_counter()
+            result = npr.predict(crop)
+            return result, (time.perf_counter() - start) * 1000.0
+        except Exception:
+            logger.exception("NPR branch failed")
+            return {"isFake": False, "fakeScore": 0.0}, 0.0
+
+    # --- Branch 3: AI primary detector (EfficientNet, full + crop) ---
     def _branch_ai_primary():
         ai_detector = getattr(models, "ai_face_detector", None)
         if not ai_detector or ai_detector.session is None:
             return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
-        start = time.perf_counter()
-        result = ai_detector.predict(image)
-        full_ms = (time.perf_counter() - start) * 1000.0
-        full_score = float(result.get("aiScore", 0.0))
-        crop_ms = 0.0
-        crop_score = 0.0
-        if do_crop_check:
+        try:
             start = time.perf_counter()
-            crop_result = ai_detector.predict(ai_face_crop)
-            crop_ms = (time.perf_counter() - start) * 1000.0
-            crop_score = float(crop_result.get("aiScore", 0.0))
-            if crop_score > full_score:
-                result = crop_result
-        return result, full_ms, crop_ms, full_score, crop_score
+            result = ai_detector.predict(image)
+            full_ms = (time.perf_counter() - start) * 1000.0
+            full_score = float(result.get("aiScore", 0.0))
+            crop_ms = 0.0
+            crop_score = 0.0
+            if do_crop_check and ai_face_crop is not None:
+                start = time.perf_counter()
+                crop_result = ai_detector.predict(ai_face_crop)
+                crop_ms = (time.perf_counter() - start) * 1000.0
+                crop_score = float(crop_result.get("aiScore", 0.0))
+                if crop_score > full_score:
+                    result = crop_result
+            return result, full_ms, crop_ms, full_score, crop_score
+        except Exception:
+            logger.exception("AI primary detector branch failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
 
-    # --- Branch 3: AI extra detector (full + crop) ---
+    # --- Branch 4: AI extra detector (full + crop) ---
     def _branch_ai_extra():
         ai_detector_extra = getattr(models, "ai_face_detector_extra", None)
         if not ai_detector_extra or ai_detector_extra.session is None:
             return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
-        start = time.perf_counter()
-        result = ai_detector_extra.predict(image)
-        full_ms = (time.perf_counter() - start) * 1000.0
-        full_score = float(result.get("aiScore", 0.0))
-        crop_ms = 0.0
-        crop_score = 0.0
-        if do_crop_check:
+        try:
             start = time.perf_counter()
-            crop_result = ai_detector_extra.predict(ai_face_crop)
-            crop_ms = (time.perf_counter() - start) * 1000.0
-            crop_score = float(crop_result.get("aiScore", 0.0))
-            if crop_score > full_score:
-                result = crop_result
-        return result, full_ms, crop_ms, full_score, crop_score
+            result = ai_detector_extra.predict(image)
+            full_ms = (time.perf_counter() - start) * 1000.0
+            full_score = float(result.get("aiScore", 0.0))
+            crop_ms = 0.0
+            crop_score = 0.0
+            if do_crop_check and ai_face_crop is not None:
+                start = time.perf_counter()
+                crop_result = ai_detector_extra.predict(ai_face_crop)
+                crop_ms = (time.perf_counter() - start) * 1000.0
+                crop_score = float(crop_result.get("aiScore", 0.0))
+                if crop_score > full_score:
+                    result = crop_result
+            return result, full_ms, crop_ms, full_score, crop_score
+        except Exception:
+            logger.exception("AI extra detector branch failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
 
-    # Run all three branches in parallel.
+    # --- Branch 5: CLIP-based UniversalFakeDetect ---
+    def _branch_clip():
+        clip_det = getattr(models, "clip_fake_detector", None)
+        if not clip_det or not clip_det.is_loaded:
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
+        try:
+            # Run on full image
+            start = time.perf_counter()
+            full_result = clip_det.predict(image)
+            full_ms = (time.perf_counter() - start) * 1000.0
+            full_score = float(full_result.get("aiScore", 0.0))
+            # Run on face crop
+            crop_ms = 0.0
+            crop_score = 0.0
+            best_result = full_result
+            if ai_face_crop is not None and ai_face_crop.size > 0:
+                start = time.perf_counter()
+                crop_result = clip_det.predict(ai_face_crop)
+                crop_ms = (time.perf_counter() - start) * 1000.0
+                crop_score = float(crop_result.get("aiScore", 0.0))
+                if crop_score > full_score:
+                    best_result = crop_result
+            return best_result, full_ms, crop_ms, full_score, crop_score
+        except Exception:
+            logger.exception("CLIP branch failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}, 0.0, 0.0, 0.0, 0.0
+
+    # =================== RUN ALL BRANCHES IN PARALLEL ===================
     fs_future = GENERAL_EXECUTOR.submit(_branch_faceswap)
+    npr_future = GENERAL_EXECUTOR.submit(_branch_npr)
     ai_p_future = GENERAL_EXECUTOR.submit(_branch_ai_primary)
     ai_e_future = GENERAL_EXECUTOR.submit(_branch_ai_extra)
+    clip_future = GENERAL_EXECUTOR.submit(_branch_clip)
 
     face_swap_result, fs_ms = fs_future.result()
     timings["deepfake_faceswap_ms"] = _round2(fs_ms)
+
+    npr_result, npr_ms = npr_future.result()
+    timings["deepfake_npr_ms"] = _round2(npr_ms)
 
     ai_primary_result, ai_p_full_ms, ai_p_crop_ms, ai_primary_full_score, ai_primary_crop_score = ai_p_future.result()
     timings["deepfake_ai_model_full_ms"] = _round2(ai_p_full_ms)
@@ -483,10 +647,54 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     timings["deepfake_ai_model_extra_crop_ms"] = _round2(ai_e_crop_ms)
     timings["deepfake_ai_model_extra_ms"] = _round2(ai_e_full_ms + ai_e_crop_ms)
 
+    clip_result, clip_full_ms, clip_crop_ms, clip_full_score, clip_crop_score = clip_future.result()
+    timings["deepfake_clip_full_ms"] = _round2(clip_full_ms)
+    timings["deepfake_clip_crop_ms"] = _round2(clip_crop_ms)
+    timings["deepfake_clip_ms"] = _round2(clip_full_ms + clip_crop_ms)
+    timings["jpeg_quality_estimate"] = float(jpeg_quality)
+
+    # =================== EXTRACT SCORES ===================
     face_swap_score = float(face_swap_result.get("score", 0.0))
+    npr_score = float(npr_result.get("fakeScore", 0.0))
     ai_primary_score = float(ai_primary_result.get("aiScore", 0.0))
     ai_extra_score = float(ai_extra_result.get("aiScore", 0.0))
-    ai_evidence_scores = [
+    clip_score = float(clip_result.get("aiScore", 0.0))
+
+    # =================== STAGE 1: FAST SCREENING ===================
+    # If both NPR and EfficientNet are very low confidence → early exit as real.
+    # This saves ~200ms by skipping heavy fusion logic.
+    fast_exit_threshold = float(settings.AI_FAST_EXIT_THRESHOLD) * 100.0  # convert to percent
+    npr_available = bool(getattr(models, "npr_detector", None) and models.npr_detector.is_loaded)
+    fast_exit = False
+    if npr_available and npr_score < fast_exit_threshold and ai_primary_score < fast_exit_threshold:
+        # Double-check: face swap must also be low
+        if face_swap_score < float(settings.DEEPFAKE_FACE_SWAP_STRONG_THRESHOLD):
+            fast_exit = True
+
+    # Don't fast-exit if face confidence is low (suspicious)
+    if fast_exit and face_confidence < float(settings.AI_FACE_LOW_CONF_FACE_CONF):
+        fast_exit = False
+
+    if fast_exit:
+        fusion_result = {
+            "isDeepfake": False,
+            "attackRiskLevel": "LOW_RISK",
+            "attackTypes": [],
+            "scores": {
+                "faceSwapScore": _round2(face_swap_score),
+                "aiGeneratedScore": _round2(max(npr_score, ai_primary_score)),
+            },
+        }
+        if settings.DEBUG:
+            logger.info(
+                "Deepfake fusion FAST EXIT: npr=%.2f ai_primary=%.2f fs=%.2f jpeg_q=%d face_conf=%.2f",
+                npr_score, ai_primary_score, face_swap_score, jpeg_quality, face_confidence,
+            )
+        return fusion_result, timings
+
+    # =================== STAGE 2 & 3: ADAPTIVE WEIGHTED FUSION ===================
+    # Collect all AI evidence scores.
+    ai_evidence_scores: list[float] = [
         float(ai_primary_full_score),
         float(ai_primary_crop_score),
         float(ai_extra_full_score),
@@ -494,30 +702,71 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         float(ai_primary_score),
         float(ai_extra_score),
     ]
+    # Add NPR and CLIP scores to evidence pool.
+    if npr_available and npr_score > 0.0:
+        ai_evidence_scores.append(npr_score)
+    clip_available = bool(getattr(models, "clip_fake_detector", None) and models.clip_fake_detector.is_loaded)
+    if clip_available:
+        if clip_full_score > 0.0:
+            ai_evidence_scores.append(clip_full_score)
+        if clip_crop_score > 0.0:
+            ai_evidence_scores.append(clip_crop_score)
+        if clip_score > 0.0:
+            ai_evidence_scores.append(clip_score)
 
-    ai_weights = []
-    ai_weighted_scores = []
+    # --- Adaptive weighting based on compression quality ---
+    freq_penalty = float(settings.COMPRESSION_FREQ_WEIGHT_PENALTY)
+    small_face_boost = float(settings.SMALL_FACE_BOOST_MULTIPLIER)
+
+    # Base weights for each detector family (on 0-100 scale scores).
+    w_primary = max(0.0, float(settings.AI_FACE_PRIMARY_WEIGHT))    # EfficientNet
+    w_extra = max(0.0, float(settings.AI_FACE_EXTRA_WEIGHT))        # ai_vs_deepfake_vs_real
+    w_npr = 0.25 if npr_available else 0.0
+    w_clip = 0.35 if clip_available else 0.0
+
+    if is_low_quality_jpeg:
+        # Reduce frequency-domain model weights (EfficientNet, ViT) — they
+        # confuse JPEG blocking artifacts with GAN artifacts.
+        w_primary *= freq_penalty
+        w_extra *= freq_penalty
+        # Boost compression-robust models.
+        w_npr *= 1.3
+        w_clip *= 1.2
+
+    if small_face_for_ai_crop:
+        # Small faces benefit from crop-based scores.
+        w_npr *= small_face_boost
+        w_clip *= small_face_boost
+
+    # Compute weighted AI score.
+    weighted_scores: list[tuple[float, float]] = []  # (weight, score)
     if timings["deepfake_ai_model_ms"] > 0.0:
-        ai_weights.append(max(0.0, float(settings.AI_FACE_PRIMARY_WEIGHT)))
-        ai_weighted_scores.append(ai_primary_score)
+        weighted_scores.append((w_primary, ai_primary_score))
     if timings["deepfake_ai_model_extra_ms"] > 0.0:
-        ai_weights.append(max(0.0, float(settings.AI_FACE_EXTRA_WEIGHT)))
-        ai_weighted_scores.append(ai_extra_score)
+        weighted_scores.append((w_extra, ai_extra_score))
+    if npr_available and npr_ms > 0.0:
+        weighted_scores.append((w_npr, npr_score))
+    if clip_available and timings["deepfake_clip_ms"] > 0.0:
+        weighted_scores.append((w_clip, clip_score))
 
-    if ai_weighted_scores:
-        weight_sum = sum(ai_weights)
+    if weighted_scores:
+        weight_sum = sum(w for w, _ in weighted_scores)
         if weight_sum <= 0.0:
-            ai_score = float(sum(ai_weighted_scores) / len(ai_weighted_scores))
+            ai_score = float(sum(s for _, s in weighted_scores) / len(weighted_scores))
         else:
-            ai_score = float(sum(w * s for w, s in zip(ai_weights, ai_weighted_scores)) / weight_sum)
+            ai_score = float(sum(w * s for w, s in weighted_scores) / weight_sum)
     else:
         ai_score = 0.0
 
-    # For small/far faces, prefer strongest AI evidence from full-frame or face-crop branch.
+    # For small/far faces, prefer strongest AI evidence.
     if small_face_for_ai_crop:
-        ai_score = max(ai_score, ai_primary_score, ai_extra_score)
+        ai_score = max(ai_score, ai_primary_score, ai_extra_score, clip_score, npr_score)
     if settings.AI_FACE_ALWAYS_CROP_CHECK:
-        ai_score = max(ai_score, ai_primary_full_score, ai_primary_crop_score, ai_extra_full_score, ai_extra_crop_score)
+        all_crop_scores = [ai_primary_full_score, ai_primary_crop_score,
+                           ai_extra_full_score, ai_extra_crop_score]
+        if clip_available:
+            all_crop_scores.extend([clip_full_score, clip_crop_score])
+        ai_score = max(ai_score, *all_crop_scores)
 
     # Linear calibration for environment-specific tuning (default is identity).
     ai_score = float(
@@ -528,39 +777,56 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         )
     )
 
+    # =================== DECISION LOGIC ===================
     ai_threshold = float(settings.AI_FACE_THRESHOLD)
     ai_low_conf_threshold = float(settings.AI_FACE_LOW_CONF_THRESHOLD)
     low_conf_face_limit = float(settings.AI_FACE_LOW_CONF_FACE_CONF)
 
-    face_confidence = float(face.score * 100.0) if face is not None else 0.0
     low_conf_or_missing_face = (face is None) or (face_confidence <= low_conf_face_limit)
     ai_generated_primary = ai_score >= ai_threshold
     ai_generated_low_conf = low_conf_or_missing_face and ai_score >= ai_low_conf_threshold
+
+    # Hard block: any single model > threshold → immediate flag.
+    hard_block_single = float(settings.AI_HARD_BLOCK_SINGLE)
+    evidence_nonzero = [value for value in ai_evidence_scores if value > 0.0]
+    ai_generated_hard_block = bool(evidence_nonzero and max(evidence_nonzero) >= hard_block_single)
+
+    # Consensus: 3+ models > threshold → flag.
+    consensus_threshold = float(settings.AI_CONSENSUS_THRESHOLD)
+    consensus_min = max(1, int(settings.AI_CONSENSUS_MIN_MODELS))
+    consensus_count = sum(1 for value in evidence_nonzero if value >= consensus_threshold)
+    ai_generated_consensus_multi = consensus_count >= consensus_min
+
+    # Legacy vote/trigger thresholds (kept for backward compat).
     hard_block_threshold = float(settings.AI_FACE_HARD_BLOCK_THRESHOLD)
     vote_threshold = float(settings.AI_FACE_VOTE_THRESHOLD)
     vote_min_count = max(1, int(settings.AI_FACE_VOTE_MIN_COUNT))
     any_trigger_threshold = float(settings.AI_FACE_ANY_TRIGGER_THRESHOLD)
-    evidence_nonzero = [value for value in ai_evidence_scores if value > 0.0]
     vote_count = sum(1 for value in evidence_nonzero if value >= vote_threshold)
-    ai_generated_hard_block = bool(evidence_nonzero and max(evidence_nonzero) >= hard_block_threshold)
+    ai_generated_legacy_hard = bool(evidence_nonzero and max(evidence_nonzero) >= hard_block_threshold)
     ai_generated_vote = vote_count >= vote_min_count
     ai_generated_any_trigger = bool(evidence_nonzero and max(evidence_nonzero) >= any_trigger_threshold)
+
     consensus_ai_threshold = float(settings.AI_FACE_CONSENSUS_AI_THRESHOLD)
     consensus_face_swap_threshold = float(settings.AI_FACE_CONSENSUS_FACE_SWAP_THRESHOLD)
-    ai_generated_consensus = False
+    ai_generated_consensus_legacy = False
     if consensus_ai_threshold <= 100.0:
-        ai_generated_consensus = (ai_score >= consensus_ai_threshold) and (
+        ai_generated_consensus_legacy = (ai_score >= consensus_ai_threshold) and (
             face_swap_score >= consensus_face_swap_threshold
         )
+
     ai_generated = (
         ai_generated_primary
         or ai_generated_low_conf
-        or ai_generated_consensus
+        or ai_generated_consensus_legacy
         or ai_generated_hard_block
+        or ai_generated_consensus_multi
+        or ai_generated_legacy_hard
         or ai_generated_vote
         or (ai_generated_any_trigger and face_swap_score >= consensus_face_swap_threshold)
     )
 
+    # --- Real suppress: high-confidence real face with moderate AI scores ---
     face_swap_threshold = float(settings.DEEPFAKE_FACE_SWAP_STRONG_THRESHOLD)
     face_swap_flag = face_swap_score >= face_swap_threshold
     likely_real_suppressed = False
@@ -569,6 +835,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             (small_face_for_ai_crop and ai_score >= ai_threshold)
             or ai_generated_hard_block
             or ai_generated_vote
+            or ai_generated_consensus_multi
         )
         if not skip_real_suppress:
             if (
@@ -578,6 +845,22 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             ):
                 ai_generated = False
                 likely_real_suppressed = True
+
+    # --- Compression-aware false-positive suppression ---
+    # For heavily compressed images (WhatsApp, low-quality JPEG) with a high-confidence
+    # real face, require stronger evidence before flagging as AI.
+    if is_low_quality_jpeg and ai_generated and not face_swap_flag and not ai_generated_hard_block:
+        if face_confidence >= 72.0:
+            # Require at least 2 models > 70% for compressed images
+            strong_evidence_count = sum(1 for value in evidence_nonzero if value >= 70.0)
+            if strong_evidence_count < 2:
+                ai_generated = False
+                likely_real_suppressed = True
+                if settings.DEBUG:
+                    logger.info(
+                        "Compression-aware suppress: jpeg_q=%d face_conf=%.2f strong_evidence=%d ai=%.2f",
+                        jpeg_quality, face_confidence, strong_evidence_count, ai_score,
+                    )
 
     is_deepfake = bool(face_swap_flag or ai_generated)
 
@@ -608,33 +891,18 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     }
     if settings.DEBUG:
         logger.info(
-            "Deepfake fusion: face_conf=%.2f small_face=%s ai=%.2f ai_primary=%.2f (full=%.2f crop=%.2f) ai_extra=%.2f (full=%.2f crop=%.2f) fs=%.2f high_th=%.2f low_th=%.2f hard_th=%.2f vote_th=%.2f vote_count=%d vote_min=%d any_th=%.2f low_conf_limit=%.2f consensus_ai_th=%.2f consensus_fs_th=%.2f low_conf=%s consensus=%s hard=%s vote=%s real_suppressed=%s deepfake=%s",
-            face_confidence,
-            small_face_for_ai_crop,
-            ai_score,
-            ai_primary_score,
-            ai_primary_full_score,
-            ai_primary_crop_score,
-            ai_extra_score,
-            ai_extra_full_score,
-            ai_extra_crop_score,
-            face_swap_score,
-            ai_threshold,
-            ai_low_conf_threshold,
-            hard_block_threshold,
-            vote_threshold,
-            vote_count,
-            vote_min_count,
-            any_trigger_threshold,
-            low_conf_face_limit,
-            consensus_ai_threshold,
-            consensus_face_swap_threshold,
-            low_conf_or_missing_face,
-            ai_generated_consensus,
-            ai_generated_hard_block,
-            ai_generated_vote,
-            likely_real_suppressed,
-            is_deepfake,
+            "Deepfake fusion: face_conf=%.2f small_face=%s jpeg_q=%d ai=%.2f "
+            "ai_primary=%.2f (full=%.2f crop=%.2f) ai_extra=%.2f (full=%.2f crop=%.2f) "
+            "npr=%.2f clip=%.2f (full=%.2f crop=%.2f) fs=%.2f "
+            "hard_single=%s consensus_multi=%s(%d/%d) legacy_hard=%s vote=%s(%d/%d) "
+            "real_suppressed=%s deepfake=%s",
+            face_confidence, small_face_for_ai_crop, jpeg_quality, ai_score,
+            ai_primary_score, ai_primary_full_score, ai_primary_crop_score,
+            ai_extra_score, ai_extra_full_score, ai_extra_crop_score,
+            npr_score, clip_score, clip_full_score, clip_crop_score, face_swap_score,
+            ai_generated_hard_block, ai_generated_consensus_multi, consensus_count, consensus_min,
+            ai_generated_legacy_hard, ai_generated_vote, vote_count, vote_min_count,
+            likely_real_suppressed, is_deepfake,
         )
     return fusion_result, timings
 
@@ -722,6 +990,17 @@ def _get_face_embedding(models, face_aligned_112: np.ndarray) -> tuple[np.ndarra
             weights.append(max(0.0, float(settings.ARCFACE_EXTRA_WEIGHT)))
         except Exception:
             logger.exception("ArcFace extra model embedding failed, fallback to primary")
+
+    adaface = getattr(models, "adaface_recognizer", None)
+    if adaface is not None and adaface.is_loaded:
+        try:
+            t0 = time.perf_counter()
+            adaface_emb = adaface.get_embedding(face_aligned_112)
+            timings["adaface_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+            embeddings.append(adaface_emb)
+            weights.append(max(0.0, float(getattr(adaface, "weight", settings.ADAFACE_WEIGHT))))
+        except Exception:
+            logger.exception("AdaFace embedding failed, fallback to ArcFace-only fusion")
 
     if len(embeddings) == 1:
         return embeddings[0], timings
@@ -816,7 +1095,8 @@ async def compare_faces(
     if tgt_err:
         return tgt_err
 
-    if settings.ARCFACE_ADAPTIVE_COMPARE:
+    adaptive_strategy = settings.ARCFACE_ADAPTIVE_STRATEGY.strip().lower()
+    if settings.ARCFACE_ADAPTIVE_COMPARE and adaptive_strategy != "fixed":
         from app.services.quality import validate_quality as check_quality
 
         t0 = time.perf_counter()
@@ -832,24 +1112,30 @@ async def compare_faces(
         ))
         source_quality, target_quality = await asyncio.gather(src_qual_fut, tgt_qual_fut)
         timings["adaptive_quality_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+        threshold = _resolve_compare_threshold(threshold, source_quality, target_quality)
 
-        avg_quality = float(source_quality.get("score", 0.0) + target_quality.get("score", 0.0)) * 0.5
-        if avg_quality < 50.0:
-            threshold = min(threshold, float(settings.ARCFACE_ADAPTIVE_LOW))
-        elif avg_quality > 80.0:
-            threshold = max(threshold, float(settings.ARCFACE_ADAPTIVE_HIGH))
+    def _embed_from_processor(proc: FaceProcessor):
+        return _get_face_embedding(models, proc.for_arcface())
 
-    source_arc = source_proc.for_arcface()
-    target_arc = target_proc.for_arcface()
     t0 = time.perf_counter()
     if settings.COMPARE_PARALLEL_EMBEDDING:
-        src_future = COMPARE_EMBED_EXECUTOR.submit(_get_face_embedding, models, source_arc)
-        tgt_future = COMPARE_EMBED_EXECUTOR.submit(_get_face_embedding, models, target_arc)
-        source_emb, source_emb_timings = src_future.result()
-        target_emb, target_emb_timings = tgt_future.result()
+        src_future = COMPARE_EMBED_EXECUTOR.submit(_embed_from_processor, source_proc)
+        tgt_future = COMPARE_EMBED_EXECUTOR.submit(_embed_from_processor, target_proc)
+        (source_emb, source_emb_timings), (target_emb, target_emb_timings) = await _await_submitted(
+            src_future,
+            tgt_future,
+        )
     else:
-        source_emb, source_emb_timings = _get_face_embedding(models, source_arc)
-        target_emb, target_emb_timings = _get_face_embedding(models, target_arc)
+        source_emb, source_emb_timings = await _run_in_executor(
+            COMPARE_EMBED_EXECUTOR,
+            _embed_from_processor,
+            source_proc,
+        )
+        target_emb, target_emb_timings = await _run_in_executor(
+            COMPARE_EMBED_EXECUTOR,
+            _embed_from_processor,
+            target_proc,
+        )
     cosine_sim = models.face_recognizer.cosine_similarity(source_emb, target_emb)
     similarity_percent = models.face_recognizer.similarity_to_percent(cosine_sim)
     timings["arcface_similarity_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
@@ -864,7 +1150,9 @@ async def compare_faces(
         "threshold": _round2(threshold),
         "sourceFace": _build_face_payload(source_face, models),
         "targetFace": _build_face_payload(target_face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             target_face,
             target_img,
             models,
@@ -896,7 +1184,9 @@ async def liveness_check(
     img = await read_image(image)
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
         img,
         models,
         validate_attrs,
@@ -907,13 +1197,18 @@ async def liveness_check(
         return err
 
     t0 = time.perf_counter()
-    live_score, is_live = models.liveness_checker.predict(processor.for_liveness())
+    def _predict_liveness_sync():
+        return models.liveness_checker.predict(processor.for_liveness())
+
+    live_score, is_live = await _run_in_executor(GENERAL_EXECUTOR, _predict_liveness_sync)
     timings["liveness_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     response_payload = {
         "isLive": is_live,
         "liveScore": _round2(live_score),
         "face": _build_face_payload(face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             face,
             img,
             models,
@@ -945,7 +1240,9 @@ async def deepfake_check(
     img = await read_image(image)
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
         img,
         models,
         validate_attrs,
@@ -956,7 +1253,14 @@ async def deepfake_check(
         return err
 
     t0 = time.perf_counter()
-    result, fusion_timings = _run_deepfake_fusion(models, img, processor, face)
+    result, fusion_timings = await _run_in_executor(
+        VERIFY_LIVE_EXECUTOR,
+        _run_deepfake_fusion,
+        models,
+        img,
+        processor,
+        face,
+    )
     timings["deepfake_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     timings.update(fusion_timings)
     response_payload = {
@@ -965,7 +1269,9 @@ async def deepfake_check(
         "attackTypes": result["attackTypes"],
         "scores": result.get("scores", {"faceSwapScore": 0.0, "aiGeneratedScore": 0.0}),
         "face": _build_face_payload(face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             face,
             img,
             models,
@@ -1000,7 +1306,9 @@ async def analyze_face(
     img = await read_image(image)
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
         img,
         models,
         validate_attrs,
@@ -1010,17 +1318,27 @@ async def analyze_face(
     if err:
         return err
 
-    age_input = img if getattr(models.age_gender, "backend", "") == "insightface" else processor.for_age_gender()
-    age_face_crop = processor.for_deepfake()
+    def _predict_age_gender_sync():
+        age_face_crop = processor.for_age_gender()
+        age_face_crop_hires = processor.for_age_gender_hires()
+        age_input = img if getattr(models.age_gender, "backend", "") == "insightface" else age_face_crop
+        return models.age_gender.predict(
+            age_input,
+            face_crop=age_face_crop,
+            face_crop_hires=age_face_crop_hires,
+        )
+
     t0 = time.perf_counter()
-    result = models.age_gender.predict(age_input, face_crop=age_face_crop)
+    result = await _run_in_executor(GENERAL_EXECUTOR, _predict_age_gender_sync)
     timings["age_gender_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     response_payload = {
         "gender": result["gender"],
         "genderConfidence": _round2(result["genderConfidence"]),
         "ageRange": result["ageRange"],
         "face": _build_face_payload(face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             face,
             img,
             models,
@@ -1055,7 +1373,9 @@ async def verify_live(
     timings: dict[str, float] = {}
 
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
         img,
         models,
         validate_attributes=False,
@@ -1071,6 +1391,7 @@ async def verify_live(
     quality_target = processor.for_quality()
     live_crop = processor.for_liveness()
     processor.for_deepfake()  # warm cache for deepfake fusion threads
+    processor.for_ai_detection()  # warm cache for AI detection crop
 
     face_landmarks = face.landmarks
     face_bbox = face.bbox
@@ -1081,9 +1402,35 @@ async def verify_live(
         return result, (time.perf_counter() - start) * 1000.0
 
     def _run_liveness():
+        """Run MiniFASNet ensemble + optional CDCN, return fused score."""
         start = time.perf_counter()
-        value = models.liveness_checker.predict(live_crop)
-        return value, (time.perf_counter() - start) * 1000.0
+        minifas_score, minifas_live = models.liveness_checker.predict(live_crop)
+
+        cdcn = getattr(models, "cdcn_liveness", None)
+        cdcn_score = 0.0
+        cdcn_live = False
+        if cdcn is not None and cdcn.is_loaded:
+            try:
+                cdcn_score, cdcn_live = cdcn.predict(live_crop)
+            except Exception:
+                logger.exception("CDCN liveness failed, using MiniFASNet only")
+
+        # Weighted fusion of MiniFASNet and CDCN.
+        if cdcn is not None and cdcn.is_loaded and cdcn_score > 0.0:
+            w_minifas = max(0.0, float(settings.LIVENESS_MINIFAS_WEIGHT))
+            w_cdcn = max(0.0, float(settings.CDCN_WEIGHT))
+            w_total = w_minifas + w_cdcn
+            if w_total > 0.0:
+                fused_score = (minifas_score * w_minifas + cdcn_score * w_cdcn) / w_total
+            else:
+                fused_score = (minifas_score + cdcn_score) * 0.5
+            fused_live = fused_score > (float(settings.LIVENESS_THRESHOLD) * 100.0)
+        else:
+            fused_score = minifas_score
+            fused_live = minifas_live
+
+        elapsed = (time.perf_counter() - start) * 1000.0
+        return (fused_score, fused_live), elapsed
 
     def _run_deepfake():
         start = time.perf_counter()
@@ -1095,9 +1442,15 @@ async def verify_live(
         quality_future = VERIFY_LIVE_EXECUTOR.submit(_run_quality)
         liveness_future = VERIFY_LIVE_EXECUTOR.submit(_run_liveness)
         deepfake_future = VERIFY_LIVE_EXECUTOR.submit(_run_deepfake)
-        quality, quality_ms = quality_future.result()
-        (live_score, liveness_is_live), liveness_ms = liveness_future.result()
-        deepfake_result, deepfake_detail_timings, deepfake_ms = deepfake_future.result()
+        (
+            (quality, quality_ms),
+            ((live_score, liveness_is_live), liveness_ms),
+            (deepfake_result, deepfake_detail_timings, deepfake_ms),
+        ) = await _await_submitted(
+            quality_future,
+            liveness_future,
+            deepfake_future,
+        )
         timings["parallel_ms"] = _round2((time.perf_counter() - parallel_start) * 1000.0)
         timings["quality_ms"] = _round2(quality_ms)
         timings["liveness_ms"] = _round2(liveness_ms)
@@ -1112,7 +1465,15 @@ async def verify_live(
             "Failed to run liveness/deepfake models",
         )
 
-    final_is_live = bool(liveness_is_live and not deepfake_result.get("isDeepfake", False))
+    quality_gate_passed = True
+    if settings.VERIFY_LIVE_QUALITY_GATE:
+        quality_gate_passed = float(quality.get("score", 0.0)) >= float(settings.VERIFY_LIVE_QUALITY_MIN_SCORE)
+
+    final_is_live = bool(
+        liveness_is_live
+        and not deepfake_result.get("isDeepfake", False)
+        and quality_gate_passed
+    )
     response_payload = {
         "isLive": final_is_live,
         "liveScore": _round2(live_score),
@@ -1120,7 +1481,10 @@ async def verify_live(
         "attackRiskLevel": deepfake_result.get("attackRiskLevel", "LOW_RISK"),
         "attackTypes": deepfake_result.get("attackTypes", []),
         "face": _build_face_payload(face, models),
-        "validation": {"quality": quality},
+        "validation": {
+            "quality": quality,
+            "qualityGatePassed": quality_gate_passed,
+        },
     }
     _set_request_observability(
         request,
@@ -1129,6 +1493,7 @@ async def verify_live(
             "isLive": response_payload["isLive"],
             "isDeepfake": response_payload["isDeepfake"],
             "attackRiskLevel": response_payload["attackRiskLevel"],
+            "qualityGatePassed": quality_gate_passed,
         },
     )
     return response_payload
@@ -1149,19 +1514,34 @@ async def extract_embedding(
     img = await read_image(image)
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(img, models, validate_attrs, validate_qual)
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
+        img,
+        models,
+        validate_attrs,
+        validate_qual,
+    )
     timings["detect_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     if err:
         return err
 
     t0 = time.perf_counter()
-    embedding, emb_timings = _get_face_embedding(models, processor.for_arcface())
+    def _extract_embedding_sync():
+        return _get_face_embedding(models, processor.for_arcface())
+
+    embedding, emb_timings = await _run_in_executor(
+        COMPARE_EMBED_EXECUTOR,
+        _extract_embedding_sync,
+    )
     timings["arcface_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     timings.update(emb_timings)
     response_payload = {
         "embedding": embedding.astype(np.float32).tolist(),
         "face": _build_face_payload(face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             face,
             img,
             models,
@@ -1230,15 +1610,29 @@ async def compute_similarity(
     img = await read_image(image)
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    face, processor, err = _detect_and_validate(img, models, validate_attrs, validate_qual)
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
+        img,
+        models,
+        validate_attrs,
+        validate_qual,
+    )
     timings["detect_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     if err:
         return err
 
     t0 = time.perf_counter()
-    query_emb, emb_timings = _get_face_embedding(models, processor.for_arcface())
-    cosine_sim = models.face_recognizer.cosine_similarity(query_emb, stored_emb)
-    similarity_percent = models.face_recognizer.similarity_to_percent(cosine_sim)
+    def _compute_similarity_sync():
+        query_emb_local, emb_timings_local = _get_face_embedding(models, processor.for_arcface())
+        cosine_sim_local = models.face_recognizer.cosine_similarity(query_emb_local, stored_emb)
+        similarity_percent_local = models.face_recognizer.similarity_to_percent(cosine_sim_local)
+        return query_emb_local, emb_timings_local, similarity_percent_local
+
+    query_emb, emb_timings, similarity_percent = await _run_in_executor(
+        COMPARE_EMBED_EXECUTOR,
+        _compute_similarity_sync,
+    )
     timings["arcface_similarity_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
     timings.update(emb_timings)
 
@@ -1246,7 +1640,9 @@ async def compute_similarity(
         "similarity": _round2(similarity_percent),
         "queryEmbedding": query_emb.astype(np.float32).tolist(),
         "face": _build_face_payload(face, models),
-        "validation": _build_validation_payload(
+        "validation": await _run_in_executor(
+            GENERAL_EXECUTOR,
+            _build_validation_payload,
             face,
             img,
             models,

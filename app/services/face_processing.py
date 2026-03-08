@@ -62,6 +62,104 @@ def _umeyama_similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray | None:
     return matrix
 
 
+def normalize_lighting(face_crop: np.ndarray) -> np.ndarray:
+    """CLAHE normalization for low-light photos (e.g. Indonesian indoor selfies).
+
+    Only applies when the L-channel mean is below 100 (genuinely dark image).
+    Returns a copy — never modifies the input array.
+    """
+    if face_crop is None or face_crop.size == 0:
+        return face_crop
+    try:
+        lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
+        l_channel = lab[:, :, 0]
+        if float(l_channel.mean()) < 100:
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+            lab[:, :, 0] = clahe.apply(l_channel)
+            return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    except Exception:
+        pass
+    return face_crop.copy()
+
+
+def normalize_lighting_for_arcface(face_crop: np.ndarray) -> np.ndarray:
+    """CLAHE normalization specifically for ArcFace embeddings.
+
+    Uses configurable L-threshold (default 110, higher than deepfake's 100)
+    to cover more indoor selfies common in SEA environments.
+    Returns a copy — never modifies the input array.
+    """
+    if face_crop is None or face_crop.size == 0:
+        return face_crop
+    if not settings.ARCFACE_CLAHE_ENABLED:
+        return face_crop.copy()
+    try:
+        lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
+        l_channel = lab[:, :, 0]
+        if float(l_channel.mean()) < float(settings.ARCFACE_CLAHE_L_THRESHOLD):
+            grid = int(settings.ARCFACE_CLAHE_GRID_SIZE)
+            clahe = cv2.createCLAHE(
+                clipLimit=float(settings.ARCFACE_CLAHE_CLIP_LIMIT),
+                tileGridSize=(grid, grid),
+            )
+            lab[:, :, 0] = clahe.apply(l_channel)
+            return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    except Exception:
+        pass
+    return face_crop.copy()
+
+
+def estimate_jpeg_quality_from_array(image: np.ndarray) -> int:
+    """Estimate JPEG compression quality from pixel statistics.
+
+    Uses a heuristic based on 8x8 block boundary discontinuity — a
+    hallmark of JPEG compression.  Returns 0-100 where lower = heavier
+    compression.  Works purely on the decoded numpy array (no access to
+    the original file bytes).
+    """
+    if image is None or image.size == 0:
+        return 95  # assume high quality if we can't estimate
+
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        h, w = gray.shape[:2]
+        if h < 16 or w < 16:
+            return 95
+
+        gray_f = gray.astype(np.float32)
+
+        # Measure discontinuity at 8-pixel boundaries vs interior
+        h_boundary = np.abs(gray_f[:, 8::8] - gray_f[:, 7::8]) if w > 16 else np.array([0.0])
+        v_boundary = np.abs(gray_f[8::8, :] - gray_f[7::8, :]) if h > 16 else np.array([0.0])
+
+        h_interior = np.abs(gray_f[:, 1::8] - gray_f[:, ::8]) if w > 16 else np.array([1.0])
+        v_interior = np.abs(gray_f[1::8, :] - gray_f[::8, :]) if h > 16 else np.array([1.0])
+
+        boundary_mean = float((h_boundary.mean() + v_boundary.mean()) * 0.5)
+        interior_mean = float((h_interior.mean() + v_interior.mean()) * 0.5)
+
+        if interior_mean < 1e-6:
+            return 95
+
+        # Ratio > 1.0 indicates JPEG blocking artifacts.
+        # Higher ratio → lower quality.
+        ratio = boundary_mean / interior_mean
+        if ratio <= 1.0:
+            return 95
+        elif ratio <= 1.1:
+            return 85
+        elif ratio <= 1.3:
+            return 75
+        elif ratio <= 1.6:
+            return 65
+        elif ratio <= 2.0:
+            return 55
+        else:
+            return 45
+    except Exception:
+        return 95
+
+
 @dataclass
 class FaceProcessor:
     """Prepare one detected face for all downstream models."""
@@ -236,11 +334,75 @@ class FaceProcessor:
         )
         return crop
 
+    def for_ai_detection(self, target_size: int = 224) -> np.ndarray:
+        """Loose bbox crop for AI-generated face detection.
+
+        Uses a configurable expansion scale (default 1.3x) around the face
+        bounding box — NO ArcFace warpAffine alignment.  This preserves:
+        - JPEG blocking artifacts (8x8 grid patterns)
+        - GAN checkerboard artifacts in frequency domain
+        - Skin texture micro-patterns
+        - Compression noise profiles
+
+        Uses INTER_LINEAR (not INTER_AREA) to preserve high-frequency
+        artifact signatures that AI detectors rely on.
+        """
+        crop_scale = float(settings.AI_DETECT_CROP_SCALE)
+        cache_key = f"ai_detect_{target_size}_{crop_scale:.2f}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        h, w = self.image.shape[:2]
+        x1, y1, x2, y2 = self._bbox_xyxy()
+        bw = max(1.0, x2 - x1)
+        bh = max(1.0, y2 - y1)
+
+        cx = (x1 + x2) * 0.5
+        cy = (y1 + y2) * 0.5
+        side = max(bw, bh) * crop_scale
+
+        crop_x1 = max(0, int(cx - side * 0.5))
+        crop_y1 = max(0, int(cy - side * 0.5))
+        crop_x2 = min(w, int(cx + side * 0.5))
+        crop_y2 = min(h, int(cy + side * 0.5))
+
+        if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
+            crop = self._raw_crop()
+        else:
+            crop = self.image[crop_y1:crop_y2, crop_x1:crop_x2]
+            if crop is None or crop.size == 0:
+                crop = self._raw_crop()
+
+        crop = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+        self._cache[cache_key] = crop
+        self._debug_log(
+            "FaceProcessor AI detection crop size=%d scale=%.2f bbox=(%d,%d,%d,%d) shape=%s",
+            target_size,
+            crop_scale,
+            crop_x1,
+            crop_y1,
+            crop_x2,
+            crop_y2,
+            crop.shape,
+        )
+        return crop
+
     def for_arcface(self) -> np.ndarray:
-        return self.aligned_face(112)
+        """112x112 aligned face with optional CLAHE normalization for ArcFace."""
+        cache_key = "arcface_clahe"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        aligned = self.aligned_face(112)
+        result = normalize_lighting_for_arcface(aligned)
+        self._cache[cache_key] = result
+        return result
 
     def for_age_gender(self) -> np.ndarray:
         return self.aligned_face(96)
+
+    def for_age_gender_hires(self) -> np.ndarray:
+        """224x224 aligned face for ViT/FairFace age estimation (avoids 96→224 upsampling loss)."""
+        return self.aligned_face(224)
 
     def for_liveness(self) -> np.ndarray:
         return self.expanded_bbox_crop(scale=2.7)

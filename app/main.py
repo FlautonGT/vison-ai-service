@@ -35,6 +35,7 @@ async def _warmup_models(registry: ModelRegistry):
     start = time.time()
     dummy_image = np.zeros((640, 640, 3), dtype=np.uint8)
     dummy_face = np.zeros((112, 112, 3), dtype=np.uint8)
+    dummy_face_hires = np.zeros((224, 224, 3), dtype=np.uint8)
 
     try:
         if registry.face_detector and registry.face_detector.session is not None:
@@ -53,6 +54,12 @@ async def _warmup_models(registry: ModelRegistry):
             registry.face_recognizer_extra.get_embedding(dummy_face)
     except Exception:
         logger.exception("ArcFace extra warmup failed")
+
+    try:
+        if registry.adaface_recognizer and registry.adaface_recognizer.is_loaded:
+            registry.adaface_recognizer.get_embedding(dummy_face)
+    except Exception:
+        logger.exception("AdaFace warmup failed")
 
     try:
         if registry.liveness_checker:
@@ -79,6 +86,24 @@ async def _warmup_models(registry: ModelRegistry):
         logger.exception("AI face detector extra warmup failed")
 
     try:
+        if registry.npr_detector and registry.npr_detector.is_loaded:
+            registry.npr_detector.predict(dummy_face)
+    except Exception:
+        logger.exception("NPR detector warmup failed")
+
+    try:
+        if registry.clip_fake_detector and registry.clip_fake_detector.is_loaded:
+            registry.clip_fake_detector.predict(dummy_face)
+    except Exception:
+        logger.exception("CLIP fake detector warmup failed")
+
+    try:
+        if registry.cdcn_liveness and registry.cdcn_liveness.is_loaded:
+            registry.cdcn_liveness.predict(dummy_face)
+    except Exception:
+        logger.exception("CDCN liveness warmup failed")
+
+    try:
         if registry.face_parser and registry.face_parser.session is not None:
             registry.face_parser.predict_attributes(dummy_face)
     except Exception:
@@ -86,9 +111,20 @@ async def _warmup_models(registry: ModelRegistry):
 
     try:
         if registry.age_gender and registry.age_gender.is_loaded:
-            registry.age_gender.predict(dummy_face, face_crop=dummy_face)
+            registry.age_gender.predict(
+                dummy_face,
+                face_crop=dummy_face,
+                face_crop_hires=dummy_face_hires,
+            )
     except Exception:
         logger.exception("Age/gender warmup failed")
+
+    try:
+        mivolo = getattr(getattr(registry, "age_gender", None), "mivolo_estimator", None)
+        if mivolo is not None and mivolo.is_loaded:
+            mivolo.predict(dummy_face_hires)
+    except Exception:
+        logger.exception("MiVOLO warmup failed")
 
     logger.info("Model warmup finished in %.2fs", time.time() - start)
 
@@ -167,6 +203,11 @@ async def health():
     arcface_extra_model_name = settings.ARCFACE_EXTRA_MODEL
     if registry and getattr(registry, "face_recognizer_extra", None) is not None:
         arcface_extra_model_name = registry.face_recognizer_extra.model_name
+    adaface_model_name = settings.ADAFACE_MODEL
+    adaface_loaded = False
+    if registry and getattr(registry, "adaface_recognizer", None) is not None and registry.adaface_recognizer.is_loaded:
+        adaface_model_name = registry.adaface_recognizer.model_name
+        adaface_loaded = True
 
     liveness_models = settings.liveness_model_list
     if registry and registry.liveness_checker is not None:
@@ -209,6 +250,23 @@ async def health():
     ):
         fairface_model = registry.age_gender.fairface_estimator.model_path
         fairface_loaded = True
+    mivolo_model = settings.MIVOLO_MODEL
+    mivolo_loaded = False
+    if (
+        registry
+        and registry.age_gender is not None
+        and getattr(registry.age_gender, "mivolo_estimator", None) is not None
+        and registry.age_gender.mivolo_estimator.is_loaded
+    ):
+        mivolo_model = registry.age_gender.mivolo_estimator.model_name
+        mivolo_loaded = True
+
+    npr_model = settings.NPR_MODEL
+    npr_loaded = bool(registry and registry.npr_detector and registry.npr_detector.is_loaded) if registry else False
+    clip_fake_model = settings.CLIP_FAKE_MODEL
+    clip_fake_loaded = bool(registry and registry.clip_fake_detector and registry.clip_fake_detector.is_loaded) if registry else False
+    cdcn_model = settings.CDCN_MODEL
+    cdcn_loaded = bool(registry and registry.cdcn_liveness and registry.cdcn_liveness.is_loaded) if registry else False
 
     model_details = {
         "scrfd": {
@@ -222,6 +280,10 @@ async def health():
         "arcface_extra": {
             "loaded": bool(status.get("faceRecognizerExtra", False)),
             "model": arcface_extra_model_name,
+        },
+        "adaface": {
+            "loaded": adaface_loaded,
+            "model": adaface_model_name,
         },
         "liveness": {
             "loaded": int(status.get("livenessModels", 0)) > 0,
@@ -238,6 +300,18 @@ async def health():
         "ai_face_detector_extra": {
             "loaded": bool(status.get("aiFaceDetectorExtra", False)),
             "model": ai_face_model_extra,
+        },
+        "npr_detector": {
+            "loaded": npr_loaded,
+            "model": npr_model,
+        },
+        "clip_fake_detector": {
+            "loaded": clip_fake_loaded,
+            "model": clip_fake_model,
+        },
+        "cdcn_liveness": {
+            "loaded": cdcn_loaded,
+            "model": cdcn_model,
         },
         "face_parsing": {
             "loaded": bool(status.get("faceParser", False)),
@@ -259,6 +333,10 @@ async def health():
         "fairface": {
             "loaded": fairface_loaded,
             "model": os.path.basename(fairface_model) if fairface_loaded else fairface_model,
+        },
+        "mivolo": {
+            "loaded": mivolo_loaded,
+            "model": mivolo_model,
         },
     }
 

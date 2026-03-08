@@ -125,10 +125,14 @@ class ModelRegistry:
         self.face_detector: Optional[SCRFDDetector] = None
         self.face_recognizer: Optional[ArcFaceRecognizer] = None
         self.face_recognizer_extra: Optional[ArcFaceRecognizer] = None
+        self.adaface_recognizer: Optional[AdaFaceRecognizer] = None
         self.liveness_checker: Optional[LivenessChecker] = None
         self.deepfake_detector: Optional[DeepfakeDetector] = None
         self.ai_face_detector: Optional[AIFaceDetector] = None
         self.ai_face_detector_extra: Optional[AIFaceDetector] = None
+        self.npr_detector: Optional[NPRDetector] = None
+        self.clip_fake_detector: Optional[CLIPFakeDetector] = None
+        self.cdcn_liveness: Optional[CDCNLiveness] = None
         self.face_parser: Optional[FaceParser] = None
         self.age_gender: Optional[AgeGenderEstimator] = None
         self._ready = False
@@ -249,6 +253,52 @@ class ModelRegistry:
             shared_session=extra_shared_session,
         )
 
+        # --- AdaFace (Phase 3, disabled by default) ---
+        self.adaface_recognizer = None
+        if settings.ADAFACE_ENABLED:
+            adaface_path = _resolve_model_path(model_dir, settings.ADAFACE_MODEL, settings.PREFER_INT8_MODELS)
+            try:
+                self.adaface_recognizer = AdaFaceRecognizer(adaface_path, providers=providers)
+                if not self.adaface_recognizer.is_loaded:
+                    logger.info("AdaFace model not available (model not found), skipping")
+                    self.adaface_recognizer = None
+                else:
+                    logger.info("AdaFace loaded for embedding fusion: %s", adaface_path)
+            except Exception:
+                logger.warning("Failed to load AdaFace model, skipping", exc_info=True)
+                self.adaface_recognizer = None
+
+        # --- Optional enhanced models (graceful skip if not found) ---
+        npr_path = _resolve_model_path(model_dir, settings.NPR_MODEL, settings.PREFER_INT8_MODELS)
+        try:
+            self.npr_detector = NPRDetector(npr_path, providers=providers)
+            if not self.npr_detector.is_loaded:
+                logger.info("NPR detector not available (model not found), skipping")
+                self.npr_detector = None
+        except Exception:
+            logger.warning("Failed to load NPR detector, skipping", exc_info=True)
+            self.npr_detector = None
+
+        clip_fake_path = _resolve_model_path(model_dir, settings.CLIP_FAKE_MODEL, settings.PREFER_INT8_MODELS)
+        try:
+            self.clip_fake_detector = CLIPFakeDetector(clip_fake_path, providers=providers)
+            if not self.clip_fake_detector.is_loaded:
+                logger.info("CLIP fake detector not available (model not found), skipping")
+                self.clip_fake_detector = None
+        except Exception:
+            logger.warning("Failed to load CLIP fake detector, skipping", exc_info=True)
+            self.clip_fake_detector = None
+
+        cdcn_path = _resolve_model_path(model_dir, settings.CDCN_MODEL, settings.PREFER_INT8_MODELS)
+        try:
+            self.cdcn_liveness = CDCNLiveness(cdcn_path, providers=providers)
+            if not self.cdcn_liveness.is_loaded:
+                logger.info("CDCN liveness not available (model not found), skipping")
+                self.cdcn_liveness = None
+        except Exception:
+            logger.warning("Failed to load CDCN liveness, skipping", exc_info=True)
+            self.cdcn_liveness = None
+
         self.face_parser = FaceParser(
             model_path=_resolve_model_path(model_dir, settings.FACE_PARSING_MODEL, settings.PREFER_INT8_MODELS),
             providers=providers,
@@ -258,6 +308,20 @@ class ModelRegistry:
             model_path=_resolve_model_path(model_dir, settings.AGE_GENDER_MODEL, settings.PREFER_INT8_MODELS),
             providers=providers,
         )
+
+        # --- MiVOLO (Phase 3, disabled by default) ---
+        if settings.MIVOLO_ENABLED and self.age_gender is not None:
+            mivolo_path = _resolve_model_path(model_dir, settings.MIVOLO_MODEL, settings.PREFER_INT8_MODELS)
+            try:
+                mivolo = MiVOLOEstimator(mivolo_path, providers=providers)
+                if mivolo.is_loaded:
+                    self.age_gender.mivolo_estimator = mivolo
+                    self.age_gender.mivolo_weight = max(0.0, float(settings.MIVOLO_WEIGHT))
+                    logger.info("MiVOLO loaded for age/gender fusion: %s", mivolo_path)
+                else:
+                    logger.info("MiVOLO model not available (model not found), skipping")
+            except Exception:
+                logger.warning("Failed to load MiVOLO model, skipping", exc_info=True)
 
         if self.face_detector is None or self.face_detector.session is None:
             raise RuntimeError("Required model SCRFD is not loaded")
@@ -278,10 +342,14 @@ class ModelRegistry:
         self.face_detector = None
         self.face_recognizer = None
         self.face_recognizer_extra = None
+        self.adaface_recognizer = None
         self.liveness_checker = None
         self.deepfake_detector = None
         self.ai_face_detector = None
         self.ai_face_detector_extra = None
+        self.npr_detector = None
+        self.clip_fake_detector = None
+        self.cdcn_liveness = None
         self.face_parser = None
         self.age_gender = None
         self._ready = False
@@ -309,12 +377,22 @@ class ModelRegistry:
             "aiFaceDetectorExtra": bool(
                 self.ai_face_detector_extra and self.ai_face_detector_extra.session is not None
             ),
+            "nprDetector": bool(self.npr_detector and self.npr_detector.is_loaded),
+            "clipFakeDetector": bool(self.clip_fake_detector and self.clip_fake_detector.is_loaded),
+            "cdcnLiveness": bool(self.cdcn_liveness and self.cdcn_liveness.is_loaded),
             "faceParser": bool(self.face_parser and self.face_parser.session is not None),
             "ageGender": bool(self.age_gender and self.age_gender.is_loaded),
             "fairFace": bool(
                 self.age_gender
                 and hasattr(self.age_gender, "fairface_estimator")
                 and self.age_gender.fairface_estimator.is_loaded
+            ),
+            "adaFace": bool(self.adaface_recognizer and self.adaface_recognizer.is_loaded),
+            "miVOLO": bool(
+                self.age_gender
+                and hasattr(self.age_gender, "mivolo_estimator")
+                and self.age_gender.mivolo_estimator is not None
+                and self.age_gender.mivolo_estimator.is_loaded
             ),
         }
 
@@ -688,10 +766,24 @@ class ArcFaceRecognizer:
     EMBEDDING_DIM = 512
 
     def __init__(self, model_path: str, providers: Optional[list] = None, use_flip_aug: bool = True):
+        from app.core.config import settings as _cfg
+
         self.session = None
         self.use_flip_aug = bool(use_flip_aug)
         self.model_path = model_path
         self.model_name = os.path.basename(model_path)
+
+        # INTER_CUBIC preserves more detail when upsampling small faces to 112x112.
+        interp_str = _cfg.ARCFACE_RESIZE_INTERPOLATION.strip().lower()
+        if interp_str == "cubic":
+            self._resize_interpolation = cv2.INTER_CUBIC
+        elif interp_str == "area":
+            self._resize_interpolation = cv2.INTER_AREA
+        elif interp_str == "lanczos":
+            self._resize_interpolation = cv2.INTER_LANCZOS4
+        else:
+            self._resize_interpolation = cv2.INTER_LINEAR
+
         if ort is None:
             logger.warning("onnxruntime is not available; ArcFace disabled")
             return
@@ -700,10 +792,10 @@ class ArcFaceRecognizer:
             return
         self.session = _create_session(model_path, providers=providers)
         self.model_name = os.path.basename(getattr(self.session, "_model_path", model_path))
-        logger.info("ArcFace loaded: %s (flip_aug=%s)", model_path, self.use_flip_aug)
+        logger.info("ArcFace loaded: %s (flip_aug=%s interp=%s)", model_path, self.use_flip_aug, interp_str)
 
     def _preprocess(self, face_crop: np.ndarray) -> np.ndarray:
-        aligned = cv2.resize(face_crop, (112, 112))
+        aligned = cv2.resize(face_crop, (112, 112), interpolation=self._resize_interpolation)
         aligned = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).astype(np.float32)
         # Official InsightFace ArcFace preprocessing: (pixel - 127.5) / 127.5
         aligned = (aligned - 127.5) / 127.5
@@ -754,31 +846,134 @@ class ArcFaceRecognizer:
             percent = ((sim + 1.0) * 0.5) * 100.0
             return round(float(np.clip(percent, 0.0, 100.0)), 2)
 
-        # Piecewise calibration on cosine [0..1] domain.
-        # Calibrated to produce AWS-comparable scores:
-        #   cos 0.0  -> 0%     (completely different)
-        #   cos 0.2  -> 50%    (different person)
-        #   cos 0.35 -> 74%    (threshold boundary)
-        #   cos 0.5  -> 90%    (likely same person)
-        #   cos 0.6  -> 97%    (same person, different photo)
-        #   cos 0.7+ -> 99%+   (same person, high confidence)
         cos01 = max(0.0, sim)
-        if cos01 <= 0.2:
-            percent = (cos01 / 0.2) * 50.0
-        elif cos01 <= 0.35:
-            percent = 50.0 + ((cos01 - 0.2) / 0.15) * 24.0
-        elif cos01 <= 0.5:
-            percent = 74.0 + ((cos01 - 0.35) / 0.15) * 16.0
-        elif cos01 <= 0.6:
-            percent = 90.0 + ((cos01 - 0.5) / 0.1) * 7.0
+
+        # SEA calibration: shifts breakpoints lower to accommodate lower cosine
+        # scores typical of SEA same-person pairs (training data bias + image quality).
+        if settings.SIMILARITY_SEA_CALIBRATION_ENABLED:
+            low = float(settings.SIMILARITY_SEA_COS_THRESHOLD_LOW)    # default 0.15
+            mid = float(settings.SIMILARITY_SEA_COS_THRESHOLD_MID)    # default 0.28
+            high = float(settings.SIMILARITY_SEA_COS_THRESHOLD_HIGH)  # default 0.42
+            vhigh = float(settings.SIMILARITY_SEA_COS_THRESHOLD_VERY_HIGH)  # default 0.55
+
+            if cos01 <= low:
+                percent = (cos01 / max(low, 1e-9)) * 50.0
+            elif cos01 <= mid:
+                percent = 50.0 + ((cos01 - low) / max(mid - low, 1e-9)) * 24.0
+            elif cos01 <= high:
+                percent = 74.0 + ((cos01 - mid) / max(high - mid, 1e-9)) * 16.0
+            elif cos01 <= vhigh:
+                percent = 90.0 + ((cos01 - high) / max(vhigh - high, 1e-9)) * 7.0
+            else:
+                t = min(1.0, (cos01 - vhigh) / max(1.0 - vhigh, 1e-9))
+                percent = 97.0 + (t ** 0.3) * 2.9
         else:
-            # Strong same-person zone (cos > 0.6): map to 97-99.9
-            # Use power curve to compress into narrow 97-99.9 band
-            t = min(1.0, (cos01 - 0.6) / 0.4)
-            percent = 97.0 + (t ** 0.3) * 2.9
+            # Original calibration (Western-tuned breakpoints).
+            # Piecewise calibration on cosine [0..1] domain.
+            # Calibrated to produce AWS-comparable scores:
+            #   cos 0.0  -> 0%     (completely different)
+            #   cos 0.2  -> 50%    (different person)
+            #   cos 0.35 -> 74%    (threshold boundary)
+            #   cos 0.5  -> 90%    (likely same person)
+            #   cos 0.6  -> 97%    (same person, different photo)
+            #   cos 0.7+ -> 99%+   (same person, high confidence)
+            if cos01 <= 0.2:
+                percent = (cos01 / 0.2) * 50.0
+            elif cos01 <= 0.35:
+                percent = 50.0 + ((cos01 - 0.2) / 0.15) * 24.0
+            elif cos01 <= 0.5:
+                percent = 74.0 + ((cos01 - 0.35) / 0.15) * 16.0
+            elif cos01 <= 0.6:
+                percent = 90.0 + ((cos01 - 0.5) / 0.1) * 7.0
+            else:
+                # Strong same-person zone (cos > 0.6): map to 97-99.9
+                # Use power curve to compress into narrow 97-99.9 band
+                t = min(1.0, (cos01 - 0.6) / 0.4)
+                percent = 97.0 + (t ** 0.3) * 2.9
 
         cap = float(np.clip(settings.SIMILARITY_CALIBRATION_CAP, 0.0, 100.0))
         return round(float(np.clip(percent, 0.0, cap)), 2)
+
+
+class AdaFaceRecognizer:
+    """AdaFace embedding model wrapper for optional embedding fusion."""
+
+    EMBEDDING_DIM = 512
+
+    def __init__(self, model_path: str, providers: Optional[list] = None, use_flip_aug: Optional[bool] = None):
+        from app.core.config import settings as _cfg
+
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.weight = max(0.0, float(_cfg.ADAFACE_WEIGHT))
+        self.use_flip_aug = bool(_cfg.ARCFACE_FLIP_AUG if use_flip_aug is None else use_flip_aug)
+
+        interp_str = _cfg.ARCFACE_RESIZE_INTERPOLATION.strip().lower()
+        if interp_str == "cubic":
+            self._resize_interpolation = cv2.INTER_CUBIC
+        elif interp_str == "area":
+            self._resize_interpolation = cv2.INTER_AREA
+        elif interp_str == "lanczos":
+            self._resize_interpolation = cv2.INTER_LANCZOS4
+        else:
+            self._resize_interpolation = cv2.INTER_LINEAR
+
+        if ort is None:
+            logger.warning("onnxruntime is not available; AdaFace disabled")
+            return
+        if not os.path.exists(model_path):
+            logger.warning("AdaFace model not found: %s", model_path)
+            return
+
+        try:
+            self.session = _create_session(model_path, providers=providers)
+            self.model_name = os.path.basename(getattr(self.session, "_model_path", model_path))
+            logger.info(
+                "AdaFace loaded: %s (flip_aug=%s interp=%s weight=%.3f)",
+                model_path,
+                self.use_flip_aug,
+                interp_str,
+                self.weight,
+            )
+        except Exception:
+            logger.exception("Failed loading AdaFace model")
+            self.session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def _preprocess(self, face_crop: np.ndarray) -> np.ndarray:
+        aligned = cv2.resize(face_crop, (112, 112), interpolation=self._resize_interpolation)
+        aligned = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).astype(np.float32)
+        aligned = (aligned - 127.5) / 127.5
+        return aligned.transpose(2, 0, 1)[np.newaxis, ...]
+
+    def _infer_embedding(self, blob: np.ndarray) -> np.ndarray:
+        output = self.session.run(None, {self.session.get_inputs()[0].name: blob})[0]
+        embedding = np.asarray(output[0], dtype=np.float32).reshape(-1)
+        if embedding.size != self.EMBEDDING_DIM:
+            raise ValueError(
+                f"AdaFace embedding dimension mismatch: expected {self.EMBEDDING_DIM}, got {embedding.size}"
+            )
+        return embedding
+
+    def get_embedding(self, face_crop: np.ndarray) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("AdaFace model not loaded")
+        if face_crop is None or face_crop.size == 0:
+            raise ValueError("face_crop is empty")
+
+        embedding = self._infer_embedding(self._preprocess(face_crop))
+        if self.use_flip_aug:
+            flip_emb = self._infer_embedding(self._preprocess(cv2.flip(face_crop, 1)))
+            embedding = (embedding + flip_emb) * 0.5
+
+        norm = float(np.linalg.norm(embedding))
+        if norm > 0.0:
+            embedding = embedding / norm
+        return embedding.astype(np.float32)
 
 
 class LivenessChecker:
@@ -1289,27 +1484,401 @@ class AIFaceDetector:
     def predict(self, image_bgr: np.ndarray) -> dict:
         if self.session is None or image_bgr is None or image_bgr.size == 0:
             return {"isAIGenerated": False, "aiScore": 0.0}
-        blob = self._preprocess(image_bgr)
-        outputs = self.session.run(None, {self.input_name: blob})
-        fake_prob = 0.0
-        for output in outputs:
-            try:
-                probs = self._extract_probabilities(output)
-                if probs.size == 0:
+        try:
+            blob = self._preprocess(image_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            fake_prob = 0.0
+            for output in outputs:
+                try:
+                    probs = self._extract_probabilities(output)
+                    if probs.size == 0:
+                        continue
+                    positive_indices = self._resolve_positive_indices(int(probs.size))
+                    if not positive_indices:
+                        continue
+                    fake_prob = float(max(probs[idx] for idx in positive_indices))
+                    break
+                except Exception:
                     continue
-                positive_indices = self._resolve_positive_indices(int(probs.size))
-                if not positive_indices:
-                    continue
-                fake_prob = float(max(probs[idx] for idx in positive_indices))
-                break
-            except Exception:
-                continue
-        fake_prob = max(0.0, min(1.0, float(fake_prob)))
-        ai_score = round(fake_prob * 100.0, 2)
-        return {
-            "isAIGenerated": fake_prob >= self.threshold,
-            "aiScore": ai_score,
-        }
+            fake_prob = max(0.0, min(1.0, float(fake_prob)))
+            ai_score = round(fake_prob * 100.0, 2)
+            return {
+                "isAIGenerated": fake_prob >= self.threshold,
+                "aiScore": ai_score,
+            }
+        except Exception:
+            logger.exception("AI face detector inference failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}
+
+
+class NPRDetector:
+    """Neighboring Pixel Relationships detector for AI-generated image detection.
+
+    Computes 4-directional pixel difference maps and feeds them through a
+    ResNet-18 classifier.  Very fast (~15ms on CPU) and robust to JPEG
+    compression because it operates on *relative* pixel differences rather
+    than absolute values.
+
+    Reference: "Rethinking the Up-Sampling Operations in CNN-based
+    Generative Network for Generalizable Deepfake Detection" (CVPR 2024).
+    """
+
+    def __init__(self, model_path: str, providers: Optional[list] = None):
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.input_name = "input"
+        self.input_h = 224
+        self.input_w = 224
+        self.is_nhwc = False
+
+        if ort is None:
+            logger.warning("onnxruntime is not available; NPR detector disabled")
+            return
+        if not os.path.exists(model_path):
+            logger.warning("NPR detector model not found: %s", model_path)
+            return
+
+        try:
+            self.session = _create_session(model_path, providers=providers)
+            self.model_name = os.path.basename(getattr(self.session, "_model_path", model_path))
+            input_meta = self.session.get_inputs()[0]
+            self.input_name = input_meta.name
+            input_shape = list(input_meta.shape)
+            if len(input_shape) == 4:
+                self.is_nhwc = input_shape[-1] in (3, 12)
+                if self.is_nhwc:
+                    raw_h, raw_w = input_shape[1], input_shape[2]
+                else:
+                    raw_h, raw_w = input_shape[2], input_shape[3]
+                if isinstance(raw_h, int) and raw_h > 0:
+                    self.input_h = raw_h
+                if isinstance(raw_w, int) and raw_w > 0:
+                    self.input_w = raw_w
+            logger.info("NPR detector loaded: %s input=%s", model_path, input_shape)
+        except Exception:
+            logger.exception("Failed loading NPR detector model")
+            self.session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    @staticmethod
+    def compute_npr_features(image_bgr: np.ndarray, target_h: int = 224, target_w: int = 224) -> np.ndarray:
+        """Compute 4-directional pixel difference maps.
+
+        Returns a (target_h, target_w, 12) float32 array: 4 directions x 3 channels.
+        Directions: right, down, down-right diagonal, down-left diagonal.
+        """
+        resized = cv2.resize(image_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        img = resized.astype(np.float32)
+
+        # Right: pixel[y, x+1] - pixel[y, x]
+        h_diff = np.zeros_like(img)
+        h_diff[:, :-1, :] = img[:, 1:, :] - img[:, :-1, :]
+
+        # Down: pixel[y+1, x] - pixel[y, x]
+        v_diff = np.zeros_like(img)
+        v_diff[:-1, :, :] = img[1:, :, :] - img[:-1, :, :]
+
+        # Down-right diagonal
+        dr_diff = np.zeros_like(img)
+        dr_diff[:-1, :-1, :] = img[1:, 1:, :] - img[:-1, :-1, :]
+
+        # Down-left diagonal
+        dl_diff = np.zeros_like(img)
+        dl_diff[:-1, 1:, :] = img[1:, :-1, :] - img[:-1, 1:, :]
+
+        # Stack: (H, W, 12)
+        features = np.concatenate([h_diff, v_diff, dr_diff, dl_diff], axis=2)
+        return features
+
+    def _preprocess(self, image_bgr: np.ndarray) -> np.ndarray:
+        """Build input tensor from NPR features."""
+        features = self.compute_npr_features(image_bgr, self.input_h, self.input_w)
+
+        # Determine what the model actually expects
+        input_meta = self.session.get_inputs()[0]
+        input_shape = list(input_meta.shape)
+        n_channels = None
+        if len(input_shape) == 4:
+            if self.is_nhwc:
+                n_channels = input_shape[-1]
+            else:
+                n_channels = input_shape[1]
+
+        # If model expects 3 channels (standard ResNet trained on RGB NPR visualization)
+        # convert the 12-channel NPR map to a 3-channel representation.
+        if isinstance(n_channels, int) and n_channels == 3:
+            # Compute per-direction magnitude and use as 3-channel image.
+            # h_diff mag, v_diff mag, diagonal_avg mag
+            h_mag = np.sqrt(np.sum(features[:, :, 0:3] ** 2, axis=2, keepdims=True))
+            v_mag = np.sqrt(np.sum(features[:, :, 3:6] ** 2, axis=2, keepdims=True))
+            d_mag = np.sqrt(np.sum(features[:, :, 6:12] ** 2, axis=2, keepdims=True)) * 0.5
+            vis = np.concatenate([h_mag, v_mag, d_mag], axis=2)
+            # Normalize to 0-1 range
+            max_val = vis.max()
+            if max_val > 1e-6:
+                vis = vis / max_val
+            # Standard ImageNet normalization
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            vis = (vis - mean) / std
+            if self.is_nhwc:
+                return vis[np.newaxis, ...].astype(np.float32)
+            return vis.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+        # Model expects raw 12-channel NPR features
+        features = features / 255.0
+        if self.is_nhwc:
+            return features[np.newaxis, ...].astype(np.float32)
+        return features.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    def predict(self, image_bgr: np.ndarray) -> dict:
+        """Returns {"isFake": bool, "fakeScore": float 0-100}."""
+        if self.session is None or image_bgr is None or image_bgr.size == 0:
+            return {"isFake": False, "fakeScore": 0.0}
+
+        try:
+            blob = self._preprocess(image_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            output = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+
+            if output.size == 1:
+                fake_prob = float(1.0 / (1.0 + np.exp(-output[0])))
+            elif output.size >= 2:
+                probs = output[:2]
+                if np.any(probs < 0.0) or abs(float(np.sum(probs)) - 1.0) > 0.1:
+                    probs = _softmax(probs.reshape(1, -1))[0]
+                fake_prob = float(probs[0])  # index 0 = fake for NPR
+            else:
+                fake_prob = 0.0
+
+            fake_prob = max(0.0, min(1.0, fake_prob))
+            from app.core.config import settings
+            threshold = float(settings.NPR_THRESHOLD)
+            return {
+                "isFake": fake_prob >= threshold,
+                "fakeScore": round(fake_prob * 100.0, 2),
+            }
+        except Exception:
+            logger.exception("NPR detector inference failed")
+            return {"isFake": False, "fakeScore": 0.0}
+
+
+class CLIPFakeDetector:
+    """UniversalFakeDetect — CLIP ViT-B/16 feature extractor + linear probe.
+
+    Best open-source model for detecting AI-generated images across generators
+    (Midjourney, Stable Diffusion, DALL-E, Gemini/Imagen).  Operates in CLIP
+    feature space so it generalizes to unseen generators.
+
+    Reference: "Towards Universal Fake Image Detectors that Generalize Across
+    Generative Models" (CVPR 2023).
+    """
+
+    # Official CLIP normalization constants
+    CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
+    CLIP_STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+
+    def __init__(self, model_path: str, providers: Optional[list] = None):
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.input_name = "input"
+        self.input_h = 224
+        self.input_w = 224
+        self.is_nhwc = False
+
+        if ort is None:
+            logger.warning("onnxruntime is not available; CLIP fake detector disabled")
+            return
+        if not os.path.exists(model_path):
+            logger.warning("CLIP fake detector model not found: %s", model_path)
+            return
+
+        try:
+            self.session = _create_session(model_path, providers=providers)
+            input_meta = self.session.get_inputs()[0]
+            self.input_name = input_meta.name
+            input_shape = list(input_meta.shape)
+            if len(input_shape) == 4:
+                self.is_nhwc = input_shape[-1] == 3
+                if self.is_nhwc:
+                    raw_h, raw_w = input_shape[1], input_shape[2]
+                else:
+                    raw_h, raw_w = input_shape[2], input_shape[3]
+                if isinstance(raw_h, int) and raw_h > 0:
+                    self.input_h = raw_h
+                if isinstance(raw_w, int) and raw_w > 0:
+                    self.input_w = raw_w
+            logger.info("CLIP fake detector loaded: %s input=%s", model_path, input_shape)
+        except Exception:
+            logger.exception("Failed loading CLIP fake detector model")
+            self.session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def _preprocess(self, image_bgr: np.ndarray) -> np.ndarray:
+        """CLIP preprocessing: resize to 224, center crop, normalize."""
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
+
+        # Resize shortest edge to 224, then center crop
+        if h < w:
+            new_h = self.input_h
+            new_w = max(self.input_w, int(w * self.input_h / max(h, 1)))
+        else:
+            new_w = self.input_w
+            new_h = max(self.input_h, int(h * self.input_w / max(w, 1)))
+        resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+        # Center crop
+        start_y = (new_h - self.input_h) // 2
+        start_x = (new_w - self.input_w) // 2
+        cropped = resized[start_y:start_y + self.input_h, start_x:start_x + self.input_w]
+
+        # Normalize
+        normalized = cropped.astype(np.float32) / 255.0
+        normalized = (normalized - self.CLIP_MEAN) / self.CLIP_STD
+
+        if self.is_nhwc:
+            return normalized[np.newaxis, ...].astype(np.float32)
+        return normalized.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    def predict(self, image_bgr: np.ndarray) -> dict:
+        """Returns {"isAIGenerated": bool, "aiScore": float 0-100}."""
+        if self.session is None or image_bgr is None or image_bgr.size == 0:
+            return {"isAIGenerated": False, "aiScore": 0.0}
+
+        try:
+            blob = self._preprocess(image_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            output = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+
+            if output.size == 1:
+                # Single logit — positive = fake
+                fake_prob = float(1.0 / (1.0 + np.exp(-output[0])))
+            elif output.size >= 2:
+                probs = output[:2]
+                if np.any(probs < 0.0) or abs(float(np.sum(probs)) - 1.0) > 0.1:
+                    probs = _softmax(probs.reshape(1, -1))[0]
+                # Convention: index 1 = fake for CLIP-based detectors
+                fake_prob = float(probs[1]) if probs.size > 1 else float(probs[0])
+            else:
+                fake_prob = 0.0
+
+            fake_prob = max(0.0, min(1.0, fake_prob))
+            from app.core.config import settings
+            threshold = float(settings.CLIP_FAKE_THRESHOLD)
+            return {
+                "isAIGenerated": fake_prob >= threshold,
+                "aiScore": round(fake_prob * 100.0, 2),
+            }
+        except Exception:
+            logger.exception("CLIP fake detector inference failed")
+            return {"isAIGenerated": False, "aiScore": 0.0}
+
+
+class CDCNLiveness:
+    """Central Difference Convolutional Network for face anti-spoofing.
+
+    Uses central difference convolutions that capture micro-texture patterns
+    (moiré, print dots, screen pixels) more effectively than standard CNNs.
+    Consistent across skin tones and ethnicities.
+
+    Reference: "Searching Central Difference Convolutional Networks for
+    Face Anti-Spoofing" (CVPR 2020).
+    """
+
+    def __init__(self, model_path: str, providers: Optional[list] = None):
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.input_name = "input"
+        self.input_h = 256
+        self.input_w = 256
+        self.is_nhwc = False
+
+        if ort is None:
+            logger.warning("onnxruntime is not available; CDCN liveness disabled")
+            return
+        if not os.path.exists(model_path):
+            logger.warning("CDCN liveness model not found: %s", model_path)
+            return
+
+        try:
+            self.session = _create_session(model_path, providers=providers)
+            input_meta = self.session.get_inputs()[0]
+            self.input_name = input_meta.name
+            input_shape = list(input_meta.shape)
+            if len(input_shape) == 4:
+                self.is_nhwc = input_shape[-1] == 3
+                if self.is_nhwc:
+                    raw_h, raw_w = input_shape[1], input_shape[2]
+                else:
+                    raw_h, raw_w = input_shape[2], input_shape[3]
+                if isinstance(raw_h, int) and raw_h > 0:
+                    self.input_h = raw_h
+                if isinstance(raw_w, int) and raw_w > 0:
+                    self.input_w = raw_w
+            logger.info("CDCN liveness loaded: %s input=%s", model_path, input_shape)
+        except Exception:
+            logger.exception("Failed loading CDCN liveness model")
+            self.session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def _preprocess(self, face_crop: np.ndarray) -> np.ndarray:
+        resized = cv2.resize(face_crop, (self.input_w, self.input_h), interpolation=cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        normalized = (rgb - mean) / std
+        if self.is_nhwc:
+            return normalized[np.newaxis, ...].astype(np.float32)
+        return normalized.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    def predict(self, face_crop: np.ndarray) -> tuple[float, bool]:
+        """Returns (score_percent, is_live)."""
+        if self.session is None or face_crop is None or face_crop.size == 0:
+            return 0.0, False
+
+        try:
+            blob = self._preprocess(face_crop)
+            outputs = self.session.run(None, {self.input_name: blob})
+            output = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+
+            if output.size == 1:
+                # CDCN outputs a depth map mean or single score
+                raw = float(output[0])
+                if 0.0 <= raw <= 1.0:
+                    live_prob = raw
+                else:
+                    live_prob = float(1.0 / (1.0 + np.exp(-raw)))
+            elif output.size >= 2:
+                probs = output[:2]
+                if np.any(probs < 0.0) or abs(float(np.sum(probs)) - 1.0) > 0.1:
+                    probs = _softmax(probs.reshape(1, -1))[0]
+                live_prob = float(probs[1])  # index 1 = live
+            else:
+                # Depth map output — mean value indicates liveness
+                depth_map = np.asarray(outputs[0], dtype=np.float32)
+                live_prob = float(np.clip(depth_map.mean(), 0.0, 1.0))
+
+            live_prob = max(0.0, min(1.0, live_prob))
+            from app.core.config import settings
+            threshold = float(settings.CDCN_THRESHOLD)
+            score_percent = round(live_prob * 100.0, 2)
+            return score_percent, live_prob >= threshold
+        except Exception:
+            logger.exception("CDCN liveness inference failed")
+            return 0.0, False
 
 
 class FaceParser:
@@ -1337,33 +1906,36 @@ class FaceParser:
             return {"hasMask": False, "hasHat": False, "hasGlasses": False}
         if face_crop is None or face_crop.size == 0:
             return {"hasMask": False, "hasHat": False, "hasGlasses": False}
+        try:
+            resized = cv2.resize(face_crop, (512, 512)).astype(np.float32) / 255.0
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            tensor = ((resized - mean) / std).transpose(2, 0, 1)[np.newaxis, ...]
 
-        resized = cv2.resize(face_crop, (512, 512)).astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        tensor = ((resized - mean) / std).transpose(2, 0, 1)[np.newaxis, ...]
+            input_name = self.session.get_inputs()[0].name
+            output = self.session.run(None, {input_name: tensor})[0]
+            seg_map = np.argmax(output[0], axis=0)
+            classes = set(seg_map.flatten().tolist())
 
-        input_name = self.session.get_inputs()[0].name
-        output = self.session.run(None, {input_name: tensor})[0]
-        seg_map = np.argmax(output[0], axis=0)
-        classes = set(seg_map.flatten().tolist())
+            has_glasses = bool(self.GLASSES_CLASSES & classes)
+            has_hat = bool(self.HAT_CLASSES & classes)
+            nose_pixels = int(np.sum(seg_map == 10))
+            mouth_pixels = int(np.sum((seg_map == 11) | (seg_map == 12) | (seg_map == 13)))
+            total_face = int(np.sum(seg_map > 0))
+            visible_ratio = (nose_pixels + mouth_pixels) / max(total_face, 1)
+            if total_face < 2500:
+                has_mask = False
+            else:
+                has_mask = visible_ratio < 0.08
 
-        has_glasses = bool(self.GLASSES_CLASSES & classes)
-        has_hat = bool(self.HAT_CLASSES & classes)
-        nose_pixels = int(np.sum(seg_map == 10))
-        mouth_pixels = int(np.sum((seg_map == 11) | (seg_map == 12) | (seg_map == 13)))
-        total_face = int(np.sum(seg_map > 0))
-        visible_ratio = (nose_pixels + mouth_pixels) / max(total_face, 1)
-        if total_face < 2500:
-            has_mask = False
-        else:
-            has_mask = visible_ratio < 0.08
-
-        return {
-            "hasMask": has_mask,
-            "hasHat": has_hat,
-            "hasGlasses": has_glasses,
-        }
+            return {
+                "hasMask": has_mask,
+                "hasHat": has_hat,
+                "hasGlasses": has_glasses,
+            }
+        except Exception:
+            logger.exception("Face parsing inference failed")
+            return {"hasMask": False, "hasHat": False, "hasGlasses": False}
 
 
 class AgeGenderVitEstimator:
@@ -1425,36 +1997,40 @@ class AgeGenderVitEstimator:
     def predict(self, face_bgr: np.ndarray) -> Optional[dict]:
         if self.session is None or face_bgr is None or face_bgr.size == 0:
             return None
-        blob = self._preprocess(face_bgr)
-        outputs = self.session.run(None, {self.input_name: blob})
-        if not outputs:
+        try:
+            blob = self._preprocess(face_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            if not outputs:
+                return None
+            vec = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+            if vec.size < 2:
+                return None
+
+            age_raw = float(vec[0])
+            gender_raw = float(vec[1])  # model card: >=0.5 => female
+
+            age_value = age_raw * 100.0 if 0.0 <= age_raw <= 1.2 else age_raw
+            age_value = float(np.clip(age_value, 0.0, 100.0))
+
+            if 0.0 <= gender_raw <= 1.0:
+                female_prob = gender_raw
+            else:
+                female_prob = self._sigmoid(gender_raw)
+            male_prob = 1.0 - female_prob
+
+            gender = "MAN" if male_prob >= female_prob else "WOMAN"
+            confidence = max(male_prob, female_prob) * 100.0
+            age = int(round(age_value))
+            return {
+                "gender": gender,
+                "genderConfidence": round(confidence, 2),
+                "ageRange": {"low": max(0, age - 4), "high": min(100, age + 4)},
+                "maleProb": float(np.clip(male_prob, 0.0, 1.0)),
+                "ageValue": age_value,
+            }
+        except Exception:
+            logger.exception("Age/gender ViT inference failed")
             return None
-        vec = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
-        if vec.size < 2:
-            return None
-
-        age_raw = float(vec[0])
-        gender_raw = float(vec[1])  # model card: >=0.5 => female
-
-        age_value = age_raw * 100.0 if 0.0 <= age_raw <= 1.2 else age_raw
-        age_value = float(np.clip(age_value, 0.0, 100.0))
-
-        if 0.0 <= gender_raw <= 1.0:
-            female_prob = gender_raw
-        else:
-            female_prob = self._sigmoid(gender_raw)
-        male_prob = 1.0 - female_prob
-
-        gender = "MAN" if male_prob >= female_prob else "WOMAN"
-        confidence = max(male_prob, female_prob) * 100.0
-        age = int(round(age_value))
-        return {
-            "gender": gender,
-            "genderConfidence": round(confidence, 2),
-            "ageRange": {"low": max(0, age - 4), "high": min(100, age + 4)},
-            "maleProb": float(np.clip(male_prob, 0.0, 1.0)),
-            "ageValue": age_value,
-        }
 
 
 class FairFaceEstimator:
@@ -1551,6 +2127,228 @@ class FairFaceEstimator:
             "race": race_label,
         }
 
+    def predict(self, face_bgr: np.ndarray) -> Optional[dict]:
+        if self.session is None or face_bgr is None or face_bgr.size == 0:
+            return None
+        try:
+            blob = self._preprocess(face_bgr)
+            outputs = self.session.run(None, {self.input_name: blob})
+            if not outputs or len(outputs) < 3:
+                return None
+
+            race_logits = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+            gender_logits = np.asarray(outputs[1], dtype=np.float32).reshape(-1)
+            age_logits = np.asarray(outputs[2], dtype=np.float32).reshape(-1)
+
+            gender_probs = _softmax(gender_logits.reshape(1, -1))[0]
+            male_prob = float(gender_probs[0]) if gender_probs.size >= 2 else 0.5
+
+            age_probs = _softmax(age_logits.reshape(1, -1))[0]
+            age_value = float(
+                np.dot(
+                    age_probs[:len(self.AGE_BUCKET_CENTERS)],
+                    self.AGE_BUCKET_CENTERS[:len(age_probs)],
+                )
+            )
+            age_value = float(np.clip(age_value, 0.0, 100.0))
+
+            race_idx = int(np.argmax(race_logits))
+            race_label = self.RACE_LABELS[race_idx] if race_idx < len(self.RACE_LABELS) else "UNKNOWN"
+
+            gender = "MAN" if male_prob >= 0.5 else "WOMAN"
+            confidence = max(male_prob, 1.0 - male_prob) * 100.0
+            age = int(round(age_value))
+
+            return {
+                "gender": gender,
+                "genderConfidence": round(confidence, 2),
+                "ageRange": {"low": max(0, age - 5), "high": min(100, age + 5)},
+                "maleProb": float(np.clip(male_prob, 0.0, 1.0)),
+                "ageValue": age_value,
+                "race": race_label,
+            }
+        except Exception:
+            logger.exception("FairFace inference failed")
+            return None
+
+
+class MiVOLOEstimator:
+    """MiVOLO age/gender estimator for optional fusion."""
+
+    def __init__(self, model_path: str, providers: Optional[list] = None):
+        self.session = None
+        self.model_path = model_path
+        self.model_name = os.path.basename(model_path)
+        self.input_name = "input"
+        self.input_w = 224
+        self.input_h = 224
+        self.is_nhwc = False
+        self.output_names: list[str] = []
+
+        if ort is None:
+            return
+        if not os.path.exists(model_path):
+            logger.warning("MiVOLO model not found: %s", model_path)
+            return
+
+        try:
+            self.session = _create_session(model_path, providers=providers)
+            input_meta = self.session.get_inputs()[0]
+            self.input_name = input_meta.name
+            input_shape = list(input_meta.shape)
+            if len(input_shape) == 4:
+                self.is_nhwc = input_shape[-1] == 3
+                if self.is_nhwc:
+                    raw_h, raw_w = input_shape[1], input_shape[2]
+                else:
+                    raw_h, raw_w = input_shape[2], input_shape[3]
+                if isinstance(raw_h, int) and raw_h > 0:
+                    self.input_h = raw_h
+                if isinstance(raw_w, int) and raw_w > 0:
+                    self.input_w = raw_w
+            self.output_names = [meta.name for meta in self.session.get_outputs()]
+            logger.info(
+                "MiVOLO loaded: %s input=%s outputs=%s",
+                model_path,
+                input_shape,
+                self.output_names,
+            )
+        except Exception:
+            logger.exception("Failed loading MiVOLO model")
+            self.session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def _preprocess(self, face_bgr: np.ndarray) -> np.ndarray:
+        resized = cv2.resize(face_bgr, (self.input_w, self.input_h), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        norm = (rgb - mean) / std
+        if self.is_nhwc:
+            return norm[np.newaxis, ...].astype(np.float32)
+        return norm.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+
+    @staticmethod
+    def _sigmoid(value: float) -> float:
+        return float(1.0 / (1.0 + np.exp(-value)))
+
+    @staticmethod
+    def _normalize_age(age_raw: float) -> float:
+        age_value = float(age_raw)
+        if 0.0 <= age_value <= 1.5:
+            age_value *= 100.0
+        return float(np.clip(age_value, 0.0, 100.0))
+
+    def _parse_outputs(self, outputs: list[np.ndarray]) -> Optional[tuple[float, float]]:
+        vectors = [
+            (name.lower(), np.asarray(output, dtype=np.float32).reshape(-1))
+            for name, output in zip(self.output_names or ["" for _ in outputs], outputs)
+            if np.asarray(output).size > 0
+        ]
+        if not vectors:
+            return None
+
+        age_raw: Optional[float] = None
+        gender_vec: Optional[np.ndarray] = None
+
+        for name, vec in vectors:
+            if vec.size == 0:
+                continue
+            if age_raw is None and "age" in name:
+                age_raw = float(vec[-1])
+            if gender_vec is None and ("gender" in name or "sex" in name):
+                gender_vec = vec
+
+        if len(vectors) == 1:
+            vec = vectors[0][1]
+            if vec.size >= 3:
+                if gender_vec is None:
+                    gender_vec = vec[:2]
+                if age_raw is None:
+                    age_raw = float(vec[2])
+            elif vec.size == 2 and gender_vec is None:
+                if abs(float(vec[0])) > 1.5 and abs(float(vec[1])) <= 8.0:
+                    age_raw = float(vec[0])
+                    gender_vec = vec[1:2]
+                elif abs(float(vec[1])) > 1.5 and abs(float(vec[0])) <= 8.0:
+                    age_raw = float(vec[1])
+                    gender_vec = vec[:1]
+                else:
+                    gender_vec = vec
+            elif vec.size == 1 and age_raw is None:
+                age_raw = float(vec[0])
+        else:
+            if age_raw is None:
+                for _, vec in vectors:
+                    if vec.size == 1:
+                        age_raw = float(vec[0])
+                        break
+            if gender_vec is None:
+                for _, vec in vectors:
+                    if vec.size >= 2:
+                        gender_vec = vec[:2]
+                        break
+
+        if age_raw is None or gender_vec is None or gender_vec.size == 0:
+            return None
+
+        if gender_vec.size == 1:
+            raw = float(gender_vec[0])
+            male_prob = raw if 0.0 <= raw <= 1.0 else self._sigmoid(raw)
+        else:
+            probs = np.asarray(gender_vec[:2], dtype=np.float32)
+            if np.any(probs < 0.0) or abs(float(np.sum(probs)) - 1.0) > 0.1:
+                probs = _softmax(probs.reshape(1, -1))[0]
+            male_prob = float(probs[0])
+
+        return self._normalize_age(age_raw), float(np.clip(male_prob, 0.0, 1.0))
+
+    def predict(self, face_bgr: np.ndarray) -> Optional[dict]:
+        if self.session is None or face_bgr is None or face_bgr.size == 0:
+            return None
+
+        parsed = self._parse_outputs(self.session.run(None, {self.input_name: self._preprocess(face_bgr)}))
+        if parsed is None:
+            return None
+
+        age_value, male_prob = parsed
+        gender = "MAN" if male_prob >= 0.5 else "WOMAN"
+        age = int(round(age_value))
+        confidence = max(male_prob, 1.0 - male_prob) * 100.0
+        return {
+            "gender": gender,
+            "genderConfidence": round(confidence, 2),
+            "ageRange": {"low": max(0, age - 4), "high": min(100, age + 4)},
+            "maleProb": male_prob,
+            "ageValue": age_value,
+        }
+
+    def predict(self, face_bgr: np.ndarray) -> Optional[dict]:
+        if self.session is None or face_bgr is None or face_bgr.size == 0:
+            return None
+        try:
+            parsed = self._parse_outputs(self.session.run(None, {self.input_name: self._preprocess(face_bgr)}))
+            if parsed is None:
+                return None
+
+            age_value, male_prob = parsed
+            gender = "MAN" if male_prob >= 0.5 else "WOMAN"
+            age = int(round(age_value))
+            confidence = max(male_prob, 1.0 - male_prob) * 100.0
+            return {
+                "gender": gender,
+                "genderConfidence": round(confidence, 2),
+                "ageRange": {"low": max(0, age - 4), "high": min(100, age + 4)},
+                "maleProb": male_prob,
+                "ageValue": age_value,
+            }
+        except Exception:
+            logger.exception("MiVOLO inference failed")
+            return None
+
 
 class AgeGenderEstimator:
     """Age/gender estimator using InsightFace/ONNX + optional ViT + FairFace ensemble."""
@@ -1583,6 +2381,10 @@ class AgeGenderEstimator:
 
         fairface_path = _resolve_model_path(self.model_dir, settings.AGE_GENDER_FAIRFACE_MODEL, settings.PREFER_INT8_MODELS)
         self.fairface_estimator = FairFaceEstimator(fairface_path, providers=self.providers)
+
+        # MiVOLO is injected externally by ModelRegistry.load_all() when enabled.
+        self.mivolo_estimator: Optional[MiVOLOEstimator] = None
+        self.mivolo_weight: float = 0.0
 
         if self.app is not None:
             self.backend = "insightface"
@@ -1823,7 +2625,10 @@ class AgeGenderEstimator:
         primary: dict,
         secondary: Optional[dict],
         tertiary: Optional[dict] = None,
+        quaternary: Optional[dict] = None,
     ) -> dict:
+        from app.core.config import settings as _cfg
+
         sources: list[tuple[dict, float]] = []
         if primary:
             sources.append((primary, self.primary_weight))
@@ -1831,6 +2636,9 @@ class AgeGenderEstimator:
             sources.append((secondary, self.vit_weight))
         if tertiary:
             sources.append((tertiary, self.fairface_weight))
+        if quaternary:
+            mivolo_w = getattr(self, "mivolo_weight", 0.35)
+            sources.append((quaternary, mivolo_w))
 
         if not sources:
             return primary or secondary or tertiary
@@ -1854,19 +2662,35 @@ class AgeGenderEstimator:
         # Stretch higher ages to reduce systematic underestimation on elderly samples.
         if fused_age > 40.0:
             fused_age = float(np.clip(40.0 + (fused_age - 40.0) * 1.15, 0.0, 100.0))
+
+        # Race-aware age correction using FairFace's race output.
+        race = None
+        if tertiary and "race" in tertiary:
+            race = str(tertiary["race"]).upper()
+        if race:
+            sea_max = float(_cfg.AGE_CORRECTION_SEA_YOUNG_MAX_AGE)
+            if race == "SOUTHEAST_ASIAN" and fused_age <= sea_max:
+                fused_age += float(_cfg.AGE_CORRECTION_SEA_YOUNG_OFFSET)
+            elif race == "EAST_ASIAN" and fused_age <= sea_max:
+                fused_age += float(_cfg.AGE_CORRECTION_EAST_ASIAN_YOUNG_OFFSET)
+            elif race == "INDIAN" and fused_age > 50.0:
+                fused_age = 50.0 + (fused_age - 50.0) * float(_cfg.AGE_CORRECTION_INDIAN_ELDERLY_SCALE)
+            fused_age = float(np.clip(fused_age, 0.0, 100.0))
+
         fused_gender = "MAN" if fused_male >= self.male_threshold else "WOMAN"
 
         if self.debug:
             parts = []
-            labels = ["primary", "vit", "fairface"]
+            labels = ["primary", "vit", "fairface", "mivolo"]
             for i, (src, _) in enumerate(sources):
                 lbl = labels[i] if i < len(labels) else f"src{i}"
                 parts.append(f"{lbl}(male={src.get('maleProb', '?'):.3f} age={src.get('ageValue', '?'):.2f})")
             logger.info(
-                "AgeGender fusion %s -> fused(male=%.3f age=%.2f)",
+                "AgeGender fusion %s -> fused(male=%.3f age=%.2f race=%s)",
                 " ".join(parts),
                 fused_male,
                 fused_age,
+                race,
             )
 
         result = self._format_result(
@@ -1892,27 +2716,55 @@ class AgeGenderEstimator:
             payload["race"] = result["race"]
         return payload
 
-    def predict(self, image_bgr: np.ndarray, face_crop: Optional[np.ndarray] = None) -> dict:
+    def predict(
+        self,
+        image_bgr: np.ndarray,
+        face_crop: Optional[np.ndarray] = None,
+        face_crop_hires: Optional[np.ndarray] = None,
+    ) -> dict:
         if image_bgr is None or image_bgr.size == 0:
             raise ValueError("input image is empty")
 
         crop_input = face_crop if face_crop is not None and face_crop.size > 0 else image_bgr
+        # Use hires crop (224x224) for ViT/FairFace when available (avoids 96→224 upsample loss).
+        hires_input = face_crop_hires if face_crop_hires is not None and face_crop_hires.size > 0 else crop_input
 
-        primary = self._predict_with_insightface(image_bgr)
+        primary = None
+        try:
+            primary = self._predict_with_insightface(image_bgr)
+        except Exception:
+            logger.exception("Age/gender primary insightface inference failed")
         if primary is None:
-            primary = self._predict_with_onnx(crop_input)
+            try:
+                primary = self._predict_with_onnx(crop_input)
+            except Exception:
+                logger.exception("Age/gender ONNX fallback inference failed")
 
         secondary = None
         if self.vit_estimator.is_loaded:
-            secondary = self.vit_estimator.predict(crop_input)
+            try:
+                secondary = self.vit_estimator.predict(hires_input)
+            except Exception:
+                logger.exception("Age/gender ViT ensemble inference failed")
 
         tertiary = None
         if self.fairface_estimator.is_loaded:
-            tertiary = self.fairface_estimator.predict(crop_input)
+            try:
+                tertiary = self.fairface_estimator.predict(hires_input)
+            except Exception:
+                logger.exception("FairFace ensemble inference failed")
 
-        available = [r for r in (primary, secondary, tertiary) if r is not None]
+        quaternary = None
+        mivolo = getattr(self, "mivolo_estimator", None)
+        if mivolo is not None and mivolo.is_loaded:
+            try:
+                quaternary = mivolo.predict(hires_input)
+            except Exception:
+                logger.exception("MiVOLO ensemble inference failed")
+
+        available = [r for r in (primary, secondary, tertiary, quaternary) if r is not None]
         if not available:
             raise RuntimeError("No age/gender backend available")
         if len(available) == 1:
             return self._public_payload(available[0])
-        return self._public_payload(self._fuse_results(primary, secondary, tertiary))
+        return self._public_payload(self._fuse_results(primary, secondary, tertiary, quaternary))

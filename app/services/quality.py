@@ -31,7 +31,8 @@ def validate_quality(
 
     # Component scores on 0-100 range.
     sharpness_score = float(np.clip(sharpness, 0.0, 100.0))
-    brightness_score = float(np.clip(100.0 - abs(brightness - 55.0) * 2.0, 0.0, 100.0))
+    brightness_target = float(settings.QUALITY_BRIGHTNESS_TARGET)
+    brightness_score = float(np.clip(100.0 - abs(brightness - brightness_target) * 2.0, 0.0, 100.0))
     frontal_score = (
         100.0
         if pose["isFrontal"]
