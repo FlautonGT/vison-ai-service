@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
-"""Export enhanced detection models to ONNX format with optional INT8 quantization.
+"""Export deepfake and liveness models to ONNX format with optional INT8 quantization.
 
 Models exported:
-  1. UniversalFakeDetect — CLIP ViT-B/16 + linear probe (AI-generated image detection)
-  2. NPR Detector — ResNet-18 on pixel-difference features (compression-robust deepfake detection)
-  3. CDCN Liveness — Central Difference Convolutional Network (passive face anti-spoofing)
+  1. DeepFake ViT v2 - prithivMLmods/Deep-Fake-Detector-v2-Model
+     - Architecture: ViT-base-patch16-224
+     - F1: 0.92 on the source deepfake dataset
+     - Expected input: [1, 3, 224, 224]
+     - Normalization: ImageNet mean/std
+     - Output: [1, 2] logits (index 0 = Fake, index 1 = Real)
+  2. CDCN Liveness - Central Difference Convolutional Network
 
 Usage:
-    # Install dependencies first:
-    pip install torch torchvision ftfy regex open_clip_torch onnx onnxruntime onnxruntime-tools
-
-    # Download pretrained weights (see download instructions in each section)
-    # Then run:
+    pip install torch torchvision transformers "optimum[onnxruntime]" onnx onnxruntime onnxruntime-tools
     python scripts/export_models.py --output-dir models/ --quantize
 
-Prerequisites — clone these repos and download weights:
-
-    # 1. UniversalFakeDetect
-    git clone https://github.com/Yuheng-Li/UniversalFakeDetect.git /tmp/UniversalFakeDetect
-    # Download pretrained checkpoint:
-    #   https://github.com/Yuheng-Li/UniversalFakeDetect — follow README for fc_weights.pth
-    #   OR use the HuggingFace mirror if available.
-
-    # 2. NPR DeepfakeDetection
-    git clone https://github.com/chuangchuangtan/NPR-DeepfakeDetection.git /tmp/NPR-DeepfakeDetection
-    # Download pretrained checkpoint from the repo releases.
-
-    # 3. CDCN
-    git clone https://github.com/ZitongYu/CDCN.git /tmp/CDCN
-    # Download pretrained checkpoint from the repo.
+Prerequisites:
+    # DeepFake ViT v2 is exported directly from HuggingFace:
+    #   prithivMLmods/Deep-Fake-Detector-v2-Model
+    #
+    # CDCN still optionally uses the upstream repo:
+    #   git clone https://github.com/ZitongYu/CDCN.git /tmp/CDCN
 """
 
 from __future__ import annotations
@@ -36,7 +27,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -44,231 +37,89 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_dir(path: str) -> Path:
-    p = Path(path)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    output_dir = Path(path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 # ---------------------------------------------------------------------------
-# 1. UniversalFakeDetect (CLIP ViT-B/16 + linear probe)
+# 1. DeepFake ViT v2 (HuggingFace / Optimum ONNX export)
 # ---------------------------------------------------------------------------
-def export_universal_fake_detect(
-    output_dir: str,
-    weights_path: str = "",
-    clip_model_name: str = "ViT-B-16",
-    clip_pretrained: str = "openai",
-) -> str:
-    """Export CLIP ViT-B/16 visual encoder + linear probe to ONNX.
-
-    The model takes a 224x224 RGB image and outputs a single logit
-    (positive = fake).
-    """
-    import torch
-    import torch.nn as nn
+def export_deepfake_vit_v2(output_dir: str) -> str:
+    """Export prithivMLmods/Deep-Fake-Detector-v2-Model to ONNX."""
+    model_id = "prithivMLmods/Deep-Fake-Detector-v2-Model"
+    out_dir = _ensure_dir(output_dir)
+    output_path = out_dir / "deepfake_vit_v2.onnx"
+    export_dir: Path | None = None
 
     try:
-        import open_clip
+        from optimum.exporters.onnx import main_export
+        from transformers import AutoImageProcessor
     except ImportError:
-        logger.error("open_clip not installed. Run: pip install open_clip_torch")
+        logger.error(
+            "transformers/optimum not installed. "
+            "Run: pip install transformers \"optimum[onnxruntime]\""
+        )
         return ""
 
-    logger.info("Loading CLIP model: %s / %s", clip_model_name, clip_pretrained)
-    clip_model, _, _ = open_clip.create_model_and_transforms(
-        clip_model_name, pretrained=clip_pretrained
+    try:
+        processor = AutoImageProcessor.from_pretrained(model_id)
+        logger.info(
+            "Exporting %s with input size=%s mean=%s std=%s",
+            model_id,
+            getattr(processor, "size", {}),
+            getattr(processor, "image_mean", []),
+            getattr(processor, "image_std", []),
+        )
+
+        export_dir = Path(tempfile.mkdtemp(prefix="deepfake_vit_v2_", dir=str(out_dir)))
+        main_export(model_id, output=export_dir, task="image-classification")
+
+        candidates = sorted(export_dir.rglob("*.onnx"))
+        if not candidates:
+            raise FileNotFoundError("Optimum export completed but no ONNX artifact was produced")
+
+        source_path = next(
+            (candidate for candidate in candidates if candidate.name == "model.onnx"),
+            candidates[0],
+        )
+
+        if output_path.exists():
+            output_path.unlink()
+        shutil.move(str(source_path), str(output_path))
+    except Exception:
+        logger.exception("Failed to export %s", model_id)
+        return ""
+    finally:
+        if export_dir is not None:
+            shutil.rmtree(export_dir, ignore_errors=True)
+
+    logger.info(
+        "DeepFake ViT v2 exported: %s (%.1f MB)",
+        output_path,
+        output_path.stat().st_size / 1e6,
     )
-    clip_model.eval()
-
-    # Get visual feature dimension
-    with torch.no_grad():
-        dummy = torch.randn(1, 3, 224, 224)
-        features = clip_model.encode_image(dummy)
-        feat_dim = features.shape[-1]
-    logger.info("CLIP visual feature dim: %d", feat_dim)
-
-    # Build the linear probe
-    linear = nn.Linear(feat_dim, 1)
-
-    if weights_path and os.path.exists(weights_path):
-        logger.info("Loading linear probe weights from: %s", weights_path)
-        state = torch.load(weights_path, map_location="cpu")
-        if isinstance(state, dict) and "model" in state:
-            state = state["model"]
-        # Try to load — handle different checkpoint formats
-        if isinstance(state, dict):
-            # Filter to just the linear layer keys
-            linear_keys = {k: v for k, v in state.items() if "weight" in k or "bias" in k}
-            if linear_keys:
-                # Rename keys if needed
-                new_state = {}
-                for k, v in linear_keys.items():
-                    clean_key = k.split(".")[-1] if "." in k else k
-                    if clean_key in ("weight", "bias"):
-                        new_state[clean_key] = v
-                if new_state:
-                    linear.load_state_dict(new_state, strict=False)
-                    logger.info("Linear probe weights loaded")
-                else:
-                    linear.load_state_dict(state, strict=False)
-            else:
-                linear.load_state_dict(state, strict=False)
-        else:
-            logger.warning("Unexpected checkpoint format, using random linear probe")
-    else:
-        logger.warning(
-            "No weights file provided for linear probe — exporting with random weights. "
-            "You should fine-tune the linear probe on your data (see fine_tune_indonesian.py)."
-        )
-
-    linear.eval()
-
-    class CLIPFakeDetectWrapper(nn.Module):
-        def __init__(self, clip_visual, probe):
-            super().__init__()
-            self.visual = clip_visual
-            self.probe = probe
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            features = self.visual(x)
-            # Normalize features (CLIP convention)
-            features = features / features.norm(dim=-1, keepdim=True)
-            logit = self.probe(features)
-            return logit
-
-    wrapper = CLIPFakeDetectWrapper(clip_model.visual, linear)
-    wrapper.eval()
-
-    dummy_input = torch.randn(1, 3, 224, 224)
-    output_path = os.path.join(output_dir, "universal_fake_detect.onnx")
-
-    logger.info("Exporting to ONNX: %s", output_path)
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper,
-            dummy_input,
-            output_path,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
-            opset_version=14,
-            do_constant_folding=True,
-        )
-
-    logger.info("UniversalFakeDetect exported: %s (%.1f MB)",
-                output_path, os.path.getsize(output_path) / 1e6)
-    return output_path
+    logger.info(
+        "Expected interface: input [1, 3, 224, 224] with ImageNet mean/std, "
+        "output [1, 2] logits (index 0 = Fake, index 1 = Real)"
+    )
+    return str(output_path)
 
 
 # ---------------------------------------------------------------------------
-# 2. NPR Detector (ResNet-18 on pixel-difference features)
+# 2. CDCN Liveness
 # ---------------------------------------------------------------------------
-def export_npr_detector(
-    output_dir: str,
-    weights_path: str = "",
-    input_channels: int = 3,
-) -> str:
-    """Export NPR detector (ResNet-18 backbone) to ONNX.
-
-    The model takes a 224x224 image (or NPR features) and outputs a
-    single logit (positive = fake).
-
-    NPR features are computed as 4-directional pixel differences in
-    preprocessing (see NPRDetector.compute_npr_features in models.py).
-    The ONNX model itself is a standard ResNet-18 classifier.
-    """
+def export_cdcn_liveness(output_dir: str, weights_path: str = "") -> str:
+    """Export CDCN or a compact anti-spoofing fallback to ONNX."""
     import torch
     import torch.nn as nn
-    from torchvision.models import resnet18, ResNet18_Weights
+    from torchvision.models import ResNet18_Weights, resnet18
 
-    logger.info("Building NPR detector (ResNet-18, in_channels=%d)", input_channels)
-
-    model = resnet18(weights=ResNet18_Weights.DEFAULT)
-
-    # Modify first conv layer if using non-RGB input
-    if input_channels != 3:
-        old_conv = model.conv1
-        model.conv1 = nn.Conv2d(
-            input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
-        )
-        # Initialize new conv with repeated RGB weights
-        with torch.no_grad():
-            if input_channels > 3:
-                repeats = (input_channels + 2) // 3
-                expanded = old_conv.weight.data.repeat(1, repeats, 1, 1)
-                model.conv1.weight.data = expanded[:, :input_channels, :, :]
-            else:
-                model.conv1.weight.data = old_conv.weight.data[:, :input_channels, :, :]
-
-    # Replace classifier head: 512 -> 1 (binary)
-    model.fc = nn.Linear(512, 1)
-
-    if weights_path and os.path.exists(weights_path):
-        logger.info("Loading NPR weights from: %s", weights_path)
-        state = torch.load(weights_path, map_location="cpu")
-        if isinstance(state, dict) and "state_dict" in state:
-            state = state["state_dict"]
-        elif isinstance(state, dict) and "model" in state:
-            state = state["model"]
-        # Remove "module." prefix if present (DataParallel)
-        cleaned = {}
-        for k, v in state.items():
-            clean_k = k.replace("module.", "")
-            cleaned[clean_k] = v
-        model.load_state_dict(cleaned, strict=False)
-        logger.info("NPR weights loaded")
-    else:
-        logger.warning(
-            "No weights file for NPR detector — exporting with ImageNet-pretrained backbone + random classifier. "
-            "Fine-tune on your data for production use."
-        )
-
-    model.eval()
-
-    dummy = torch.randn(1, input_channels, 224, 224)
-    output_path = os.path.join(output_dir, "npr_resnet18.onnx")
-
-    logger.info("Exporting to ONNX: %s", output_path)
-    with torch.no_grad():
-        torch.onnx.export(
-            model,
-            dummy,
-            output_path,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
-            opset_version=14,
-            do_constant_folding=True,
-        )
-
-    logger.info("NPR detector exported: %s (%.1f MB)",
-                output_path, os.path.getsize(output_path) / 1e6)
-    return output_path
-
-
-# ---------------------------------------------------------------------------
-# 3. CDCN Liveness
-# ---------------------------------------------------------------------------
-def export_cdcn_liveness(
-    output_dir: str,
-    weights_path: str = "",
-) -> str:
-    """Export CDCN (Central Difference Convolutional Network) to ONNX.
-
-    If the full CDCN architecture is not available, we export a compact
-    ResNet-18 based anti-spoofing model as a drop-in replacement with
-    similar performance characteristics.
-
-    The model takes a 256x256 face crop and outputs a single liveness
-    score (higher = more likely real).
-    """
-    import torch
-    import torch.nn as nn
-    from torchvision.models import resnet18, ResNet18_Weights
-
-    # Try to import CDCN architecture
     cdcn_available = False
     try:
         sys.path.insert(0, "/tmp/CDCN")
         from CDCN import CDCN  # type: ignore
+
         cdcn_available = True
         logger.info("CDCN architecture imported from /tmp/CDCN")
     except ImportError:
@@ -280,12 +131,11 @@ def export_cdcn_liveness(
             state = torch.load(weights_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
-            cleaned = {k.replace("module.", ""): v for k, v in state.items()}
+            cleaned = {key.replace("module.", ""): value for key, value in state.items()}
             model.load_state_dict(cleaned, strict=False)
             logger.info("CDCN weights loaded from: %s", weights_path)
         input_size = 256
     else:
-        # Compact anti-spoofing model based on ResNet-18
         model = resnet18(weights=ResNet18_Weights.DEFAULT)
         model.fc = nn.Sequential(
             nn.Linear(512, 1),
@@ -295,13 +145,13 @@ def export_cdcn_liveness(
             state = torch.load(weights_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
-            cleaned = {k.replace("module.", ""): v for k, v in state.items()}
+            cleaned = {key.replace("module.", ""): value for key, value in state.items()}
             model.load_state_dict(cleaned, strict=False)
             logger.info("Anti-spoofing weights loaded from: %s", weights_path)
         else:
             logger.warning(
-                "No weights for CDCN/anti-spoofing — exporting with random classifier. "
-                "Fine-tune on liveness data for production use."
+                "No weights for CDCN/anti-spoofing. Exporting with random classifier; "
+                "fine-tune on liveness data for production use."
             )
         input_size = 256
 
@@ -323,8 +173,11 @@ def export_cdcn_liveness(
             do_constant_folding=True,
         )
 
-    logger.info("CDCN liveness exported: %s (%.1f MB)",
-                output_path, os.path.getsize(output_path) / 1e6)
+    logger.info(
+        "CDCN liveness exported: %s (%.1f MB)",
+        output_path,
+        os.path.getsize(output_path) / 1e6,
+    )
     return output_path
 
 
@@ -334,10 +187,12 @@ def export_cdcn_liveness(
 def quantize_to_int8(onnx_path: str) -> str:
     """Quantize an ONNX model to INT8 using onnxruntime dynamic quantization."""
     try:
-        from onnxruntime.quantization import quantize_dynamic, QuantType
+        from onnxruntime.quantization import QuantType, quantize_dynamic
     except ImportError:
-        logger.error("onnxruntime quantization not available. "
-                     "Run: pip install onnxruntime onnxruntime-tools")
+        logger.error(
+            "onnxruntime quantization not available. "
+            "Run: pip install onnxruntime onnxruntime-tools"
+        )
         return ""
 
     stem = Path(onnx_path).stem
@@ -351,47 +206,37 @@ def quantize_to_int8(onnx_path: str) -> str:
         weight_type=QuantType.QInt8,
     )
 
-    orig_size = os.path.getsize(onnx_path) / 1e6
-    quant_size = os.path.getsize(output_path) / 1e6
-    logger.info("Quantized: %.1f MB -> %.1f MB (%.0f%% reduction)",
-                orig_size, quant_size, (1 - quant_size / orig_size) * 100)
+    original_size = os.path.getsize(onnx_path) / 1e6
+    quantized_size = os.path.getsize(output_path) / 1e6
+    logger.info(
+        "Quantized: %.1f MB -> %.1f MB (%.0f%% reduction)",
+        original_size,
+        quantized_size,
+        (1 - quantized_size / original_size) * 100,
+    )
     return output_path
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(description="Export enhanced detection models to ONNX")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Export deepfake and liveness models to ONNX")
     parser.add_argument("--output-dir", default="models/", help="Output directory for ONNX files")
     parser.add_argument("--quantize", action="store_true", help="Also produce INT8 quantized versions")
-    parser.add_argument("--clip-weights", default="", help="Path to UniversalFakeDetect linear probe weights")
-    parser.add_argument("--npr-weights", default="", help="Path to NPR detector weights")
     parser.add_argument("--cdcn-weights", default="", help="Path to CDCN liveness weights")
-    parser.add_argument("--npr-channels", type=int, default=3,
-                        help="Input channels for NPR model (3=RGB NPR visualization, 12=raw NPR features)")
-    parser.add_argument("--skip-clip", action="store_true", help="Skip CLIP model export")
-    parser.add_argument("--skip-npr", action="store_true", help="Skip NPR model export")
+    parser.add_argument("--skip-vit-v2", action="store_true", help="Skip DeepFake ViT v2 export")
     parser.add_argument("--skip-cdcn", action="store_true", help="Skip CDCN model export")
     args = parser.parse_args()
 
     out = _ensure_dir(args.output_dir)
     exported: list[str] = []
 
-    if not args.skip_clip:
+    if not args.skip_vit_v2:
         logger.info("=" * 60)
-        logger.info("EXPORTING: UniversalFakeDetect (CLIP ViT-B/16)")
+        logger.info("EXPORTING: DeepFake ViT v2")
         logger.info("=" * 60)
-        path = export_universal_fake_detect(str(out), weights_path=args.clip_weights)
-        if path:
-            exported.append(path)
-
-    if not args.skip_npr:
-        logger.info("=" * 60)
-        logger.info("EXPORTING: NPR Detector (ResNet-18)")
-        logger.info("=" * 60)
-        path = export_npr_detector(str(out), weights_path=args.npr_weights,
-                                   input_channels=args.npr_channels)
+        path = export_deepfake_vit_v2(str(out))
         if path:
             exported.append(path)
 
