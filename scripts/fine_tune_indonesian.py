@@ -12,7 +12,7 @@ Expected dataset structure:
     │   ├── indo_selfie_001.jpg
     │   ├── indo_selfie_002.jpg
     │   └── ...
-    └── fake/
+    └── fake/ (or ai/)
         ├── midjourney_asian_001.jpg
         ├── stablediffusion_indo_001.jpg
         └── ...
@@ -132,7 +132,12 @@ def main():
     train_spatial_aug = A.Compose([
         A.HorizontalFlip(p=0.5),
         A.Rotate(limit=10, p=0.3),
-        A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=0, p=0.3),
+        A.Affine(
+            translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
+            scale=(0.9, 1.1),
+            rotate=0,
+            p=0.3,
+        ),
     ])
 
     train_color_aug = A.Compose([
@@ -164,11 +169,11 @@ def main():
             p=0.3,
         ),
         # Budget Android camera noise (Oppo, Vivo, Samsung low-end)
-        A.GaussNoise(var_limit=(5.0, 30.0), p=0.2),
+        A.GaussNoise(std_range=(0.01, 0.03), p=0.2),
         # Slight motion blur (selfies)
         A.MotionBlur(blur_limit=5, p=0.15),
         # JPEG compression simulation (WhatsApp quality)
-        A.ImageCompression(quality_lower=50, quality_upper=85, p=0.5),
+        A.ImageCompression(quality_range=(50, 85), p=0.5),
     ])
 
     # CLIP normalization constants
@@ -217,21 +222,26 @@ def main():
     # =================== LOAD DATA ===================
     data_dir = Path(args.data_dir)
     real_dir = data_dir / "real"
-    fake_dir = data_dir / "fake"
+    fake_dir = next((data_dir / name for name in ("fake", "ai") if (data_dir / name).exists()), None)
 
-    if not real_dir.exists() or not fake_dir.exists():
-        logger.error("Expected directories: %s and %s", real_dir, fake_dir)
+    if not real_dir.exists() or fake_dir is None:
+        logger.error(
+            "Expected directories under %s: real/ and one of fake/ or ai/",
+            data_dir,
+        )
         sys.exit(1)
+    if fake_dir.name != "fake":
+        logger.info("Using '%s/' as the fake-class directory", fake_dir.name)
 
     image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
     real_files = sorted([
-        str(f) for f in real_dir.iterdir()
-        if f.suffix.lower() in image_extensions
+        str(f) for f in real_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in image_extensions
     ])
     fake_files = sorted([
-        str(f) for f in fake_dir.iterdir()
-        if f.suffix.lower() in image_extensions
+        str(f) for f in fake_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in image_extensions
     ])
 
     logger.info("Found %d real images, %d fake images", len(real_files), len(fake_files))
