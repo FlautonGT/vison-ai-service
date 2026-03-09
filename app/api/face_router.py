@@ -1373,7 +1373,7 @@ async def analyze_face(
     def _predict_age_gender_sync():
         age_face_crop = processor.for_age_gender()
         age_face_crop_hires = processor.for_age_gender_hires()
-        age_input = img if getattr(models.age_gender, "backend", "") == "insightface" else age_face_crop
+        age_input = age_face_crop_hires
         return models.age_gender.predict(
             age_input,
             face_crop=age_face_crop,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import shutil
@@ -2648,6 +2649,7 @@ class AgeGenderEstimator:
         if self.app is None:
             return None
 
+        # Full-image fallback path only; cropped faces use ONNX primary in predict().
         faces = self.app.get(image_bgr)
         if not faces:
             h, w = image_bgr.shape[:2]
@@ -2875,34 +2877,56 @@ class AgeGenderEstimator:
         if image_bgr is None or image_bgr.size == 0:
             raise ValueError("input image is empty")
 
-        crop_input = face_crop if face_crop is not None and face_crop.size > 0 else image_bgr
+        has_face_crop = face_crop is not None and face_crop.size > 0
+        crop_input = face_crop if has_face_crop else image_bgr
         # Use hires crop (224x224) for ViT/FairFace when available (avoids 96→224 upsample loss).
         hires_input = face_crop_hires if face_crop_hires is not None and face_crop_hires.size > 0 else crop_input
 
-        primary = None
-        try:
-            primary = self._predict_with_insightface(image_bgr)
-        except Exception:
-            logger.exception("Age/gender primary insightface inference failed")
-        if primary is None:
-            try:
-                primary = self._predict_with_onnx(crop_input)
-            except Exception:
-                logger.exception("Age/gender ONNX fallback inference failed")
+        def _predict_primary() -> Optional[dict]:
+            if has_face_crop:
+                try:
+                    return self._predict_with_onnx(crop_input)
+                except Exception:
+                    logger.exception("Age/gender primary ONNX crop inference failed")
+                    return None
 
-        secondary = None
-        if self.vit_estimator.is_loaded:
+            primary = None
             try:
-                secondary = self.vit_estimator.predict(hires_input)
+                primary = self._predict_with_insightface(image_bgr)
+            except Exception:
+                logger.exception("Age/gender primary insightface inference failed")
+            if primary is None:
+                try:
+                    primary = self._predict_with_onnx(crop_input)
+                except Exception:
+                    logger.exception("Age/gender ONNX fallback inference failed")
+            return primary
+
+        def _predict_secondary() -> Optional[dict]:
+            if not self.vit_estimator.is_loaded:
+                return None
+            try:
+                return self.vit_estimator.predict(hires_input)
             except Exception:
                 logger.exception("Age/gender ViT ensemble inference failed")
+                return None
 
-        tertiary = None
-        if self.fairface_estimator.is_loaded:
+        def _predict_tertiary() -> Optional[dict]:
+            if not self.fairface_estimator.is_loaded:
+                return None
             try:
-                tertiary = self.fairface_estimator.predict(hires_input)
+                return self.fairface_estimator.predict(hires_input)
             except Exception:
                 logger.exception("FairFace ensemble inference failed")
+                return None
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            primary_future = executor.submit(_predict_primary)
+            secondary_future = executor.submit(_predict_secondary)
+            tertiary_future = executor.submit(_predict_tertiary)
+            primary = primary_future.result()
+            secondary = secondary_future.result()
+            tertiary = tertiary_future.result()
 
         quaternary = None
         mivolo = getattr(self, "mivolo_estimator", None)
