@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/workspace/vison-ai-service}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/workspace/artifacts}"
@@ -10,6 +10,9 @@ TRAINING_PYTHON="${TRAINING_PYTHON:-${TRAINING_VENV}/bin/python}"
 
 mkdir -p "${LOG_ROOT}" "${ARTIFACT_ROOT}"
 cd "${ROOT_DIR}"
+
+SUMMARY_PATH="${LOG_ROOT}/run_fast24h_summary.tsv"
+MAIN_LOG="${LOG_ROOT}/run_fast24h.log"
 
 if [ -f ".env.training" ]; then
   set -a
@@ -48,28 +51,58 @@ TASKS=(
   face_parser
 )
 
+run_logged() {
+  local task_log="$1"
+  shift
+  "$@" 2>&1 | tee -a "${task_log}"
+  return ${PIPESTATUS[0]}
+}
+
+echo -e "task\tstatus\tfailed_steps" > "${SUMMARY_PATH}"
+
+overall_failures=0
 for task in "${TASKS[@]}"; do
   task_log="${LOG_ROOT}/${task}.log"
-  echo "=== $(date -Iseconds) Starting ${task} ===" | tee -a "${task_log}"
+  failed_steps=()
+  echo "=== $(date -Iseconds) Starting ${task} ===" | tee -a "${task_log}" "${MAIN_LOG}"
 
   # shellcheck disable=SC2206
   prepare_flags=( ${EXTRA_PREPARE_FLAGS[$task]} )
-  "${TRAINING_PYTHON}" scripts/vastai_prepare_task.py \
+  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/vastai_prepare_task.py \
     --task "${task}" \
     --preferred-region "${PREFERRED_REGION}" \
-    "${prepare_flags[@]}" 2>&1 | tee -a "${task_log}"
+    "${prepare_flags[@]}"; then
+    failed_steps+=("prepare")
+  fi
 
-  "${TRAINING_PYTHON}" scripts/train_pipeline.py \
+  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/train_pipeline.py \
     --task "${task}" \
-    --override "optimization.epochs=${EPOCHS[$task]}" 2>&1 | tee -a "${task_log}"
+    --override "optimization.epochs=${EPOCHS[$task]}"; then
+    failed_steps+=("train")
+  fi
 
-  "${TRAINING_PYTHON}" scripts/evaluate_pipeline.py --task "${task}" 2>&1 | tee -a "${task_log}"
-  "${TRAINING_PYTHON}" scripts/export_pipeline.py --task "${task}" 2>&1 | tee -a "${task_log}"
-  "${TRAINING_PYTHON}" scripts/collect_training_artifacts.py \
+  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/evaluate_pipeline.py --task "${task}"; then
+    failed_steps+=("evaluate")
+  fi
+  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/export_pipeline.py --task "${task}"; then
+    failed_steps+=("export")
+  fi
+  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/collect_training_artifacts.py \
     --task "${task}" \
-    --output-dir "${ARTIFACT_ROOT}/${task}" 2>&1 | tee -a "${task_log}"
+    --output-dir "${ARTIFACT_ROOT}/${task}"; then
+    failed_steps+=("collect")
+  fi
 
-  echo "=== $(date -Iseconds) Finished ${task} ===" | tee -a "${task_log}"
+  if [ "${#failed_steps[@]}" -eq 0 ]; then
+    echo -e "${task}\tOK\t-" | tee -a "${SUMMARY_PATH}" >/dev/null
+    echo "=== $(date -Iseconds) Finished ${task} [OK] ===" | tee -a "${task_log}" "${MAIN_LOG}"
+  else
+    overall_failures=$((overall_failures + 1))
+    failed_joined="$(IFS=,; echo "${failed_steps[*]}")"
+    echo -e "${task}\tFAILED\t${failed_joined}" | tee -a "${SUMMARY_PATH}" >/dev/null
+    echo "=== $(date -Iseconds) Finished ${task} [FAILED: ${failed_joined}] ===" | tee -a "${task_log}" "${MAIN_LOG}"
+  fi
 done
 
-echo "All fast24h tasks finished. Logs are under ${LOG_ROOT} and artifacts are under ${ARTIFACT_ROOT}."
+echo "All fast24h tasks finished. Summary: ${SUMMARY_PATH}. Logs: ${LOG_ROOT}. Artifacts: ${ARTIFACT_ROOT}." | tee -a "${MAIN_LOG}"
+exit "${overall_failures}"
