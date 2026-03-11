@@ -24,6 +24,15 @@ git clone <your-repo-url> /workspace/vison-ai-service
 cd /workspace/vison-ai-service
 cp .env.training.example .env.training
 bash scripts/vastai_train_setup.sh
+set -a
+source .env.training
+set +a
+```
+
+The setup script creates a repo-local virtualenv and installs the training stack into:
+
+```bash
+/workspace/vison-ai-service/.venv-training
 ```
 
 ## Kaggle-first dataset selection
@@ -31,14 +40,15 @@ bash scripts/vastai_train_setup.sh
 Approved-only selection:
 
 ```bash
-python scripts/select_training_datasets.py --task face_attributes
+$TRAINING_PYTHON scripts/select_training_datasets.py --task face_attributes
 ```
 
 Restricted and fallback inclusion when gaps exist:
 
 ```bash
-python scripts/select_training_datasets.py \
+$TRAINING_PYTHON scripts/select_training_datasets.py \
   --task verification \
+  --allow-noncommercial \
   --allow-restricted \
   --allow-fallback
 ```
@@ -46,9 +56,10 @@ python scripts/select_training_datasets.py \
 ## Dataset download and manifest preparation
 
 ```bash
-python scripts/vastai_prepare_task.py \
+$TRAINING_PYTHON scripts/vastai_prepare_task.py \
   --task verification \
   --preferred-region indonesia \
+  --allow-noncommercial \
   --allow-restricted \
   --allow-fallback
 ```
@@ -78,11 +89,11 @@ bash scripts/vastai_run_task.sh face_parser
 ## Manual staged flow per task
 
 ```bash
-python scripts/vastai_prepare_task.py --task passive_pad --allow-restricted --allow-fallback
-python scripts/train_pipeline.py --task passive_pad
-python scripts/evaluate_pipeline.py --task passive_pad
-python scripts/export_pipeline.py --task passive_pad
-python scripts/collect_training_artifacts.py --task passive_pad --output-dir /workspace/artifacts/passive_pad
+$TRAINING_PYTHON scripts/vastai_prepare_task.py --task passive_pad --allow-restricted --allow-fallback
+$TRAINING_PYTHON scripts/train_pipeline.py --task passive_pad
+$TRAINING_PYTHON scripts/evaluate_pipeline.py --task passive_pad
+$TRAINING_PYTHON scripts/export_pipeline.py --task passive_pad
+$TRAINING_PYTHON scripts/collect_training_artifacts.py --task passive_pad --output-dir /workspace/artifacts/passive_pad
 ```
 
 ## Artifact locations
