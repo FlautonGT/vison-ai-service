@@ -503,6 +503,21 @@ def _collect_regression_outputs(model, loader: DataLoader, device: torch.device)
     return np.asarray(preds, dtype=np.float32)
 
 
+def _collect_multilabel_outputs(model, loader: DataLoader, device: torch.device) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    labels: list[np.ndarray] = []
+    scores: list[np.ndarray] = []
+    masks: list[np.ndarray] = []
+    base_model = model.module if hasattr(model, "module") else model
+    base_model.eval()
+    with torch.no_grad():
+        for images, targets, label_mask in loader:
+            logits = base_model(images.to(device))
+            labels.append(targets.cpu().numpy())
+            scores.append(torch.sigmoid(logits).cpu().numpy())
+            masks.append(label_mask.cpu().numpy())
+    return np.vstack(labels), np.vstack(scores), np.vstack(masks)
+
+
 def _save_binary_artifacts(
     report_dir: Path,
     task_name: str,
@@ -535,6 +550,9 @@ def _save_demographic_slices(
     age_preds: np.ndarray | None = None,
     gender_labels: np.ndarray | None = None,
     gender_logits: np.ndarray | None = None,
+    multilabel_labels: np.ndarray | None = None,
+    multilabel_scores: np.ndarray | None = None,
+    multilabel_mask: np.ndarray | None = None,
 ) -> None:
     slice_columns = list(config.get("evaluation", {}).get("slice_columns", []))
     if not slice_columns:
@@ -542,12 +560,12 @@ def _save_demographic_slices(
 
     task_type = config["task"]["type"]
     slice_frame = val_frame.reset_index(drop=True).copy()
-    if task_type in {"binary_classification", "regression"} and labels is not None and scores is not None:
+    if task_type in {"binary_classification", "metric_learning", "regression"} and labels is not None and scores is not None:
         if len(slice_frame) != len(labels):
             return
         slice_frame["_label"] = labels
         slice_frame["_score"] = scores
-        threshold = float(report.get("threshold", 0.5))
+        threshold = float(report.get("threshold", report.get("threshold_at_EER", 0.5)))
 
         if config["task"].get("reporting") == "pad":
             attack_col = config["data"].get("attack_type_col")
@@ -589,6 +607,19 @@ def _save_demographic_slices(
                 "age_mae": float(np.mean(np.abs(group["_age_label"] - group["_age_pred"]))),
                 "gender_accuracy": float(np.mean(group["_gender_label"] == group["_gender_pred"])),
             }
+    elif task_type == "multilabel_classification" and all(item is not None for item in [multilabel_labels, multilabel_scores]):
+        if len(slice_frame) != multilabel_labels.shape[0]:
+            return
+        slice_frame["_row_idx"] = np.arange(len(slice_frame), dtype=np.int32)
+
+        def metric_fn(group: pd.DataFrame) -> dict[str, Any]:
+            row_indices = group["_row_idx"].astype(np.int32).to_numpy()
+            group_mask = multilabel_mask[row_indices] if multilabel_mask is not None else None
+            return multilabel_report(
+                multilabel_labels[row_indices],
+                multilabel_scores[row_indices],
+                mask=group_mask,
+            )
     else:
         return
 
@@ -747,6 +778,14 @@ def evaluate(config: dict[str, Any], checkpoint_path: str | None = None) -> dict
                     np.asarray(scores, dtype=np.float32),
                     threshold=float(report["threshold_at_EER"]),
                 )
+                _save_demographic_slices(
+                    config,
+                    report,
+                    pair_frame,
+                    report_dir,
+                    labels=np.asarray(labels, dtype=np.int32),
+                    scores=np.asarray(scores, dtype=np.float32),
+                )
             elif task_type == "binary_classification":
                 label_arr, score_arr = _collect_binary_outputs(model, val_loader, device)
                 _save_binary_artifacts(report_dir, config["task"]["name"], label_arr, score_arr, threshold=float(report["threshold"]))
@@ -755,6 +794,17 @@ def evaluate(config: dict[str, Any], checkpoint_path: str | None = None) -> dict
                 label_arr = val_frame[config["data"]["label_col"]].astype(np.float32).to_numpy()
                 score_arr = _collect_regression_outputs(model, val_loader, device)
                 _save_demographic_slices(config, report, val_frame, report_dir, labels=label_arr, scores=score_arr)
+            elif task_type == "multilabel_classification":
+                multilabel_labels, multilabel_scores, multilabel_mask = _collect_multilabel_outputs(model, val_loader, device)
+                _save_demographic_slices(
+                    config,
+                    report,
+                    val_frame,
+                    report_dir,
+                    multilabel_labels=multilabel_labels,
+                    multilabel_scores=multilabel_scores,
+                    multilabel_mask=multilabel_mask,
+                )
             elif task_type == "age_gender_multitask":
                 age_labels = []
                 age_preds = []

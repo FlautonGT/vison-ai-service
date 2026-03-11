@@ -37,9 +37,7 @@
   "evaluation": {
     "report_dir": "runs/face_attributes/reports",
     "slice_columns": [
-      "gender",
-      "age_group",
-      "skin_tone_proxy",
+      "source_dataset",
       "region_proxy"
     ]
   },

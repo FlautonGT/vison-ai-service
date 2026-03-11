@@ -58,6 +58,13 @@ def _source_id(path: Path) -> str:
     return _slug(path.name or path.parent.name)
 
 
+def _existing_path(candidates: Iterable[Path]) -> Path | None:
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
 def _detect_binary_label(path: Path) -> int | None:
     context_parts = [_slug(part) for part in path.parts[-3:]]
     lowered = " ".join(context_parts)
@@ -115,6 +122,15 @@ def _country_to_region(country_code: str) -> str:
     if country:
         return "asia"
     return "unknown"
+
+
+def _fairface_region_proxy(race_label: str) -> str:
+    race = race_label.strip().lower()
+    if "southeast asian" in race:
+        return "southeast_asia"
+    if any(token in race for token in ["east asian", "indian", "middle eastern"]):
+        return "asia"
+    return "global"
 
 
 def _quality_proxy_score(image_path: str) -> float:
@@ -289,6 +305,21 @@ def generate_verification_pairs(frame: pd.DataFrame, positives_per_subject: int 
     rows = []
     grouped = {subject_id: group.reset_index(drop=True) for subject_id, group in frame.groupby("subject_id")}
     subject_ids = sorted(grouped.keys())
+
+    def _pair_metadata(left_row: pd.Series, right_row: pd.Series) -> dict[str, str]:
+        left_region = str(left_row.get("region_proxy", "unknown"))
+        right_region = str(right_row.get("region_proxy", "unknown"))
+        pair_region = left_region if left_region == right_region else "mixed"
+        return {
+            "left_region_proxy": left_region,
+            "right_region_proxy": right_region,
+            "pair_region_proxy": pair_region,
+            "left_capture_type": str(left_row.get("capture_type", "unknown")),
+            "right_capture_type": str(right_row.get("capture_type", "unknown")),
+            "left_source_dataset": str(left_row.get("source_dataset", "unknown")),
+            "right_source_dataset": str(right_row.get("source_dataset", "unknown")),
+        }
+
     for subject_id, group in grouped.items():
         if len(group) < 2:
             continue
@@ -306,6 +337,7 @@ def generate_verification_pairs(frame: pd.DataFrame, positives_per_subject: int 
                         "is_match": 1,
                         "left_subject_id": subject_id,
                         "right_subject_id": subject_id,
+                        **_pair_metadata(group.iloc[left_idx], group.iloc[right_idx]),
                     }
                 )
                 positive_count += 1
@@ -326,6 +358,7 @@ def generate_verification_pairs(frame: pd.DataFrame, positives_per_subject: int 
                     "is_match": 0,
                     "left_subject_id": subject_id,
                     "right_subject_id": other_subject,
+                    **_pair_metadata(left_row, right_row),
                 }
             )
     return pd.DataFrame(rows)
@@ -334,16 +367,26 @@ def generate_verification_pairs(frame: pd.DataFrame, positives_per_subject: int 
 def build_age_gender_manifest(dataset_dirs: Iterable[str | Path]) -> pd.DataFrame:
     rows = []
     for dataset_dir in [Path(item).expanduser().resolve() for item in dataset_dirs]:
-        csv_candidates = list(dataset_dir.rglob("fairface_label_*.csv")) + list(dataset_dir.rglob("fairface_label_train.csv"))
+        csv_candidates = sorted({path.resolve() for path in dataset_dir.rglob("fairface_label_*.csv")})
         if csv_candidates:
             for csv_path in csv_candidates:
                 frame = pd.read_csv(csv_path)
                 image_col = "file" if "file" in frame.columns else frame.columns[0]
                 for _, row in frame.iterrows():
-                    image_path = dataset_dir / str(row[image_col])
+                    image_rel = Path(str(row[image_col]))
+                    image_path = _existing_path(
+                        [
+                            csv_path.parent / image_rel,
+                            dataset_dir / image_rel,
+                            dataset_dir / csv_path.parent.name / image_rel,
+                        ]
+                    )
+                    if image_path is None:
+                        continue
                     gender_raw = str(row.get("gender", "")).strip().lower()
                     gender_id = 1 if gender_raw.startswith("female") else 0
                     age_group = str(row.get("age", "unknown"))
+                    race_label = str(row.get("race", "unknown")).strip()
                     age_proxy = {
                         "0-2": 1,
                         "3-9": 6,
@@ -357,12 +400,15 @@ def build_age_gender_manifest(dataset_dirs: Iterable[str | Path]) -> pd.DataFram
                     }.get(age_group.lower(), 30)
                     rows.append(
                         {
-                            "image_path": str(image_path.resolve()),
+                            "image_path": str(image_path),
                             "age": float(age_proxy),
                             "gender_id": int(gender_id),
+                            "gender_label": "female" if gender_id == 1 else "male",
                             "age_group": age_group,
+                            "race_label": race_label,
+                            "skin_tone_proxy": "unknown",
                             "source_dataset": dataset_dir.name,
-                            "region_proxy": "unknown",
+                            "region_proxy": _fairface_region_proxy(race_label),
                         }
                     )
             continue
@@ -469,14 +515,19 @@ def build_attribute_manifest(dataset_dirs: Iterable[str | Path]) -> pd.DataFrame
 def build_quality_manifest(source_frame: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, row in source_frame.iterrows():
+        image_path = Path(str(row["image_path"])).expanduser().resolve()
+        if not image_path.exists():
+            continue
         rows.append(
             {
-                "image_path": str(row["image_path"]),
-                "quality_score": _quality_proxy_score(str(row["image_path"])),
+                "image_path": str(image_path),
+                "quality_score": _quality_proxy_score(str(image_path)),
                 "source_dataset": row.get("source_dataset", "unknown"),
                 "region_proxy": row.get("region_proxy", "unknown"),
                 "age_group": row.get("age_group", "unknown"),
-                "gender": row.get("gender", row.get("gender_id", "unknown")),
+                "gender": row.get("gender", row.get("gender_label", row.get("gender_id", "unknown"))),
+                "race_label": row.get("race_label", "unknown"),
+                "skin_tone_proxy": row.get("skin_tone_proxy", "unknown"),
             }
         )
     return pd.DataFrame(rows)
@@ -487,12 +538,33 @@ def build_celebamaskhq_parser_manifest(dataset_dirs: Iterable[str | Path], gener
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for dataset_dir in [Path(item).expanduser().resolve() for item in dataset_dirs]:
-        images = [path for path in dataset_dir.rglob("*") if path.is_file() and path.suffix.lower() in {".jpg", ".png"} and "img" in path.parent.name.lower()]
+        images_root = _existing_path(
+            [
+                dataset_dir / "CelebAMask-HQ" / "CelebAMask-HQ" / "CelebA-HQ-img",
+                dataset_dir / "CelebA-HQ-img",
+            ]
+        )
+        mask_root = _existing_path(
+            [
+                dataset_dir / "CelebAMask-HQ" / "CelebAMask-HQ" / "CelebAMask-HQ-mask-anno",
+                dataset_dir / "CelebAMask-HQ-mask-anno",
+            ]
+        )
+        if images_root is None or mask_root is None:
+            continue
+
+        images = [path for path in images_root.rglob("*") if path.is_file() and path.suffix.lower() in {".jpg", ".png"}]
         if not images:
             continue
+
+        mask_index: dict[str, list[Path]] = {}
+        for mask_file in mask_root.rglob("*.png"):
+            stem = mask_file.stem.split("_", 1)[0]
+            mask_index.setdefault(stem, []).append(mask_file)
+
         for image_path in images:
-            stem = image_path.stem
-            mask_files = list(dataset_dir.rglob(f"{stem}_*.png"))
+            stem = image_path.stem.zfill(5)
+            mask_files = mask_index.get(stem, [])
             if not mask_files:
                 continue
             first_mask = Image.open(str(mask_files[0])).convert("L")

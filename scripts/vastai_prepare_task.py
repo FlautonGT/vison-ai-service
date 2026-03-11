@@ -40,6 +40,28 @@ TASK_QUERY_MAP = {
     "face_parser": ["face_parsing"],
 }
 
+TASK_PREFERRED_DATASETS = {
+    "verification": [
+        "trainingdatapro/asian-kyc-photo-dataset",
+        "axondata/selfie-and-official-id-photo-dataset-18k-images",
+    ],
+    "passive_pad": [
+        "trainingdatapro/asian-people-liveness-detection-video-dataset",
+        "axondata/anti-spoofing-live-dataset",
+        "trainingdatapro/ibeta-level-1-liveness-detection-dataset-part-1",
+    ],
+    "age_gender": [
+        "ghaidaalatoum/fairface",
+        "jangedoo/utkface-new",
+        "arashnic/faces-age-detection-dataset",
+    ],
+    "face_quality": [
+        "ghaidaalatoum/fairface",
+        "jangedoo/utkface-new",
+        "arashnic/faces-age-detection-dataset",
+    ],
+}
+
 
 def _allowed_statuses(args: argparse.Namespace) -> list[str]:
     statuses = ["approved"]
@@ -50,6 +72,45 @@ def _allowed_statuses(args: argparse.Namespace) -> list[str]:
     if args.allow_rejected:
         statuses.append("rejected")
     return statuses
+
+
+def _primary_region(regions: list[str]) -> str:
+    for region in ["indonesia", "southeast_asia", "asia", "global"]:
+        if region in regions:
+            return region
+    return "unknown"
+
+
+def _dataset_lookup(selected: list[dict]) -> dict[str, dict]:
+    lookup = {}
+    for item in selected:
+        dataset = item["dataset"]
+        lookup[dataset["id"].replace("/", "__")] = dataset
+    return lookup
+
+
+def _annotate_selected_dataset_metadata(frame: pd.DataFrame, selected: list[dict]) -> pd.DataFrame:
+    if frame.empty or "source_dataset" not in frame.columns:
+        return frame
+    dataset_lookup = _dataset_lookup(selected)
+    updated = frame.copy()
+    updated["dataset_id"] = updated["source_dataset"].map(
+        lambda value: dataset_lookup.get(str(value), {}).get("id", "unknown")
+    )
+    updated["dataset_status"] = updated["source_dataset"].map(
+        lambda value: dataset_lookup.get(str(value), {}).get("status", "unknown")
+    )
+    updated["dataset_region_proxy"] = updated["source_dataset"].map(
+        lambda value: _primary_region(dataset_lookup.get(str(value), {}).get("region_coverage", []))
+    )
+    if "region_proxy" not in updated.columns:
+        updated["region_proxy"] = updated["dataset_region_proxy"]
+    else:
+        updated["region_proxy"] = updated["region_proxy"].fillna("unknown")
+        updated.loc[updated["region_proxy"].isin(["", "unknown"]), "region_proxy"] = updated.loc[
+            updated["region_proxy"].isin(["", "unknown"]), "dataset_region_proxy"
+        ]
+    return updated
 
 
 def _select(task: str, args: argparse.Namespace) -> list[dict]:
@@ -69,6 +130,17 @@ def _select(task: str, args: argparse.Namespace) -> list[dict]:
                 continue
             seen.add(dataset_id)
             selected.append(item)
+    preferred_order = {
+        dataset_id: index
+        for index, dataset_id in enumerate(TASK_PREFERRED_DATASETS.get(task, []))
+    }
+    selected.sort(
+        key=lambda item: (
+            preferred_order.get(item["dataset"]["id"], 999),
+            -item["score"],
+            item["dataset"]["id"],
+        )
+    )
     return selected[: args.max_datasets]
 
 
@@ -86,13 +158,50 @@ def _download(selected: list[dict], raw_root: Path, force: bool) -> list[Path]:
 
 
 def _with_group_id(frame: pd.DataFrame, column: str = "image_path") -> pd.DataFrame:
+    if column not in frame.columns:
+        raise RuntimeError(f"Expected column '{column}' in prepared manifest frame, found {list(frame.columns)}")
     updated = frame.copy()
     updated["group_id"] = updated[column].map(lambda value: f"{Path(str(value)).parent.name}_{Path(str(value)).stem}")
     return updated
 
 
-def _prepare_verification(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _regional_assessment(task: str, selected: list[dict]) -> dict:
+    counts = {"indonesia": 0, "southeast_asia": 0, "asia": 0, "global_only": 0}
+    warnings: list[str] = []
+    statuses: list[str] = []
+    for item in selected:
+        dataset = item["dataset"]
+        statuses.append(str(dataset.get("status", "unknown")))
+        regions = set(dataset.get("region_coverage", []))
+        if "indonesia" in regions:
+            counts["indonesia"] += 1
+        if "southeast_asia" in regions:
+            counts["southeast_asia"] += 1
+        if "asia" in regions:
+            counts["asia"] += 1
+        if regions == {"global"}:
+            counts["global_only"] += 1
+
+    if not selected:
+        warnings.append(f"No datasets were selected for task '{task}'.")
+    elif counts["indonesia"] == 0 and counts["southeast_asia"] == 0:
+        warnings.append(
+            f"No Indonesia- or Southeast Asia-tagged dataset was selected for '{task}'. Current selection is fallback-heavy."
+        )
+    elif counts["southeast_asia"] == 0 and counts["indonesia"] == 0 and counts["asia"] > 0:
+        warnings.append(f"Task '{task}' is using broader Asia-only coverage. Indonesia/SEA-specific coverage remains limited.")
+    if counts["global_only"] == len(selected) and selected:
+        warnings.append(f"All selected datasets for '{task}' are global-only fallback data.")
+    if any(status != "approved" for status in statuses):
+        warnings.append(
+            f"Task '{task}' currently depends on {', '.join(sorted(set(statuses)))} datasets; verify licensing before production use."
+        )
+    return {"counts": counts, "warnings": warnings}
+
+
+def _prepare_verification(dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     frame = build_identity_manifest(dataset_dirs)
+    frame = _annotate_selected_dataset_metadata(frame, selected)
     splits = split_manifest(frame, group_cols=["subject_id"], val_ratio=0.1, test_ratio=0.1, seed=42)
     train_path = write_manifest(splits["train"], manifest_dir / "train.csv")
     val_path = write_manifest(splits["val"], manifest_dir / "val.csv")
@@ -110,8 +219,9 @@ def _prepare_verification(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
     }
 
 
-def _prepare_binary(task: str, dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _prepare_binary(task: str, dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     frame = build_deepfake_manifest(dataset_dirs) if task == "deepfake" else build_pad_manifest(dataset_dirs)
+    frame = _annotate_selected_dataset_metadata(frame, selected)
     frame = _with_group_id(frame)
     splits = split_manifest(frame, group_cols=["group_id"], val_ratio=0.1, test_ratio=0.1, seed=42, stratify_col=frame.columns[1])
     return {
@@ -121,8 +231,9 @@ def _prepare_binary(task: str, dataset_dirs: list[Path], manifest_dir: Path) -> 
     }
 
 
-def _prepare_age_gender(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _prepare_age_gender(dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     frame = build_age_gender_manifest(dataset_dirs)
+    frame = _annotate_selected_dataset_metadata(frame, selected)
     if "gender_id" in frame.columns:
         frame = frame.loc[frame["gender_id"] >= 0].reset_index(drop=True)
     frame = _with_group_id(frame)
@@ -134,8 +245,9 @@ def _prepare_age_gender(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
     }
 
 
-def _prepare_attributes(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _prepare_attributes(dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     frame = build_attribute_manifest(dataset_dirs)
+    frame = _annotate_selected_dataset_metadata(frame, selected)
     frame = _with_group_id(frame)
     splits = split_manifest(frame, group_cols=["group_id"], val_ratio=0.1, test_ratio=0.1, seed=42)
     return {
@@ -145,10 +257,11 @@ def _prepare_attributes(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
     }
 
 
-def _prepare_quality(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _prepare_quality(dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     source_frame = build_age_gender_manifest(dataset_dirs)
     if source_frame.empty:
         source_frame = build_attribute_manifest(dataset_dirs)
+    source_frame = _annotate_selected_dataset_metadata(source_frame, selected)
     frame = build_quality_manifest(source_frame)
     frame = _with_group_id(frame)
     splits = split_manifest(frame, group_cols=["group_id"], val_ratio=0.1, test_ratio=0.1, seed=42)
@@ -159,8 +272,9 @@ def _prepare_quality(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
     }
 
 
-def _prepare_parser(dataset_dirs: list[Path], manifest_dir: Path) -> dict:
+def _prepare_parser(dataset_dirs: list[Path], manifest_dir: Path, selected: list[dict]) -> dict:
     frame = build_celebamaskhq_parser_manifest(dataset_dirs, manifest_dir / "generated_masks")
+    frame = _annotate_selected_dataset_metadata(frame, selected)
     frame = _with_group_id(frame)
     splits = split_manifest(frame, group_cols=["group_id"], val_ratio=0.1, test_ratio=0.1, seed=42)
     return {
@@ -198,21 +312,22 @@ def main() -> int:
         dataset_dirs = _download(selected, raw_root, force=args.force_download)
 
     if args.task in {"deepfake", "passive_pad"}:
-        manifests = _prepare_binary(args.task, dataset_dirs, manifest_dir)
+        manifests = _prepare_binary(args.task, dataset_dirs, manifest_dir, selected)
     elif args.task == "verification":
-        manifests = _prepare_verification(dataset_dirs, manifest_dir)
+        manifests = _prepare_verification(dataset_dirs, manifest_dir, selected)
     elif args.task == "age_gender":
-        manifests = _prepare_age_gender(dataset_dirs, manifest_dir)
+        manifests = _prepare_age_gender(dataset_dirs, manifest_dir, selected)
     elif args.task == "face_attributes":
-        manifests = _prepare_attributes(dataset_dirs, manifest_dir)
+        manifests = _prepare_attributes(dataset_dirs, manifest_dir, selected)
     elif args.task == "face_quality":
-        manifests = _prepare_quality(dataset_dirs, manifest_dir)
+        manifests = _prepare_quality(dataset_dirs, manifest_dir, selected)
     else:
-        manifests = _prepare_parser(dataset_dirs, manifest_dir)
+        manifests = _prepare_parser(dataset_dirs, manifest_dir, selected)
 
     summary = {
         "task": args.task,
         "selected_datasets": selected,
+        "regional_assessment": _regional_assessment(args.task, selected),
         "dataset_dirs": [str(path) for path in dataset_dirs],
         "manifest_dir": str(manifest_dir),
         "manifests": manifests,

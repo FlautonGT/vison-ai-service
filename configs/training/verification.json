@@ -36,10 +36,11 @@
   "evaluation": {
     "report_dir": "runs/verification/reports",
     "slice_columns": [
-      "gender",
-      "age_group",
-      "skin_tone_proxy",
-      "region_proxy"
+      "pair_region_proxy",
+      "left_region_proxy",
+      "right_region_proxy",
+      "left_capture_type",
+      "right_capture_type"
     ]
   },
   "logging": {

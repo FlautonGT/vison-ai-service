@@ -34,7 +34,7 @@
     "slice_columns": [
       "gender",
       "age_group",
-      "skin_tone_proxy",
+      "race_label",
       "region_proxy"
     ]
   },

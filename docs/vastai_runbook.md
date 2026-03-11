@@ -53,6 +53,34 @@ $TRAINING_PYTHON scripts/select_training_datasets.py \
   --allow-fallback
 ```
 
+Regional priority is enforced in selection as:
+
+- Indonesia first
+- then Southeast Asia
+- then broader Asia
+- then global fallback only when label coverage would otherwise be missing
+
+Task-specific dataset preference currently favors Asia-heavy sources where Kaggle availability allows:
+
+- `passive_pad`: `trainingdatapro/asian-people-liveness-detection-video-dataset` first
+- `verification`: `trainingdatapro/asian-kyc-photo-dataset` first, then global selfie-ID fallback
+- `age_gender` and `face_quality`: `ghaidaalatoum/fairface` first because it includes `Southeast Asian` and broader Asia labels for slice reporting
+- `deepfake`, `face_attributes`, and `face_parser`: global fallback remains necessary because SEA-specific Kaggle coverage is weak or legally unclear
+
+To inspect the exact regional mix before any run, use:
+
+```bash
+$TRAINING_PYTHON scripts/vastai_prepare_task.py \
+  --task verification \
+  --preferred-region indonesia \
+  --allow-noncommercial \
+  --allow-restricted \
+  --allow-fallback \
+  --skip-download
+```
+
+The JSON summary includes `regional_assessment` warnings. Treat a warning about missing Indonesia/SEA coverage as a deployment limitation, not something to hide.
+
 ## Dataset download and manifest preparation
 
 ```bash
@@ -127,6 +155,8 @@ Quality and attribute learned models are exported for offline use and future opt
 - Verification and PAD still depend heavily on restricted non-commercial Asia datasets if you want SEA-relevant coverage.
 - Indonesia-only datasets remain weak in licensing and provenance.
 - Exact-age SEA datasets are limited; fallback global age data is still required.
+- Deepfake and parser training are still global-fallback-heavy because a legally clearer SEA-focused Kaggle alternative was not identified in this pass.
+- Attribute coverage for `hat/cap` still relies on global academic mirrors if you need trainable supervision beyond heuristics.
 - Parser/hat-support data is available via Kaggle mirrors of CelebA and CelebAMask-HQ, but they should stay fail-closed unless official terms are cleared.
 
 ## External validation boundary

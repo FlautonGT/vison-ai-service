@@ -33,9 +33,8 @@
     "report_dir": "runs/passive_pad/reports",
     "threshold_objective": "balanced_accuracy",
     "slice_columns": [
-      "gender",
-      "age_group",
-      "skin_tone_proxy",
+      "attack_type",
+      "source_dataset",
       "region_proxy"
     ]
   },
