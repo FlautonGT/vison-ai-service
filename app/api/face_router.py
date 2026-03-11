@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.models import FaceDetectionResult
+from app.services.attributes import build_attribute_report
 from app.services.face_processing import FaceProcessor
 from app.services.image_utils import ImageValidationError, read_image
 
@@ -132,6 +133,46 @@ def _build_face_payload(face, models) -> dict:
     }
 
 
+def _predict_face_attributes(processor: Optional[FaceProcessor], models) -> Optional[dict]:
+    if processor is None or not getattr(models, "face_parser", None):
+        return None
+    try:
+        return models.face_parser.predict_attributes(processor.for_attributes())
+    except Exception:
+        logger.exception("Face attribute inference failed")
+        return None
+
+
+def _build_enriched_attributes(
+    image: np.ndarray,
+    face,
+    processor: Optional[FaceProcessor],
+    models,
+    parser_attributes: Optional[dict] = None,
+    quality_payload: Optional[dict] = None,
+) -> Optional[dict]:
+    if face is None or processor is None:
+        return None
+
+    attrs = parser_attributes if parser_attributes is not None else _predict_face_attributes(processor, models)
+    if quality_payload is None:
+        from app.services.quality import validate_quality as check_quality
+
+        quality_payload = check_quality(
+            image,
+            processor.for_quality(),
+            landmarks=face.landmarks if face is not None else None,
+            face_bbox=face.bbox if face is not None else None,
+            attributes=attrs,
+        )
+    return build_attribute_report(
+        face_crop=processor.for_attributes(),
+        landmarks=face.landmarks if face is not None else None,
+        parser_attributes=attrs,
+        quality_payload=quality_payload,
+    )
+
+
 def _build_validation_payload(
     face,
     image: np.ndarray,
@@ -145,9 +186,12 @@ def _build_validation_payload(
         return payload
 
     proc = processor or FaceProcessor(image, face)
+    attrs = None
 
-    if validate_attributes and models.face_parser:
-        payload["attributes"] = models.face_parser.predict_attributes(proc.for_attributes())
+    if models.face_parser and (validate_attributes or validate_quality):
+        attrs = _predict_face_attributes(proc, models)
+    if validate_attributes:
+        payload["attributes"] = attrs
 
     if validate_quality:
         from app.services.quality import validate_quality as check_quality
@@ -157,6 +201,7 @@ def _build_validation_payload(
             proc.for_quality(),
             landmarks=face.landmarks if face is not None else None,
             face_bbox=face.bbox if face is not None else None,
+            attributes=attrs,
         )
 
     return payload
@@ -171,9 +216,11 @@ def _check_validation_errors(
     processor: Optional[FaceProcessor] = None,
 ) -> Optional[JSONResponse]:
     proc = processor or FaceProcessor(image, face)
+    attrs = None
 
-    if validate_attributes and models.face_parser:
-        attrs = models.face_parser.predict_attributes(proc.for_attributes())
+    if models.face_parser and (validate_attributes or validate_quality):
+        attrs = _predict_face_attributes(proc, models)
+    if validate_attributes and attrs is not None:
         if attrs.get("hasMask") or attrs.get("hasHat") or attrs.get("hasGlasses"):
             return _handle_face_detection_error("FACE_ATTRIBUTE_NOT_ALLOWED")
 
@@ -185,6 +232,7 @@ def _check_validation_errors(
             proc.for_quality(),
             landmarks=face.landmarks if face is not None else None,
             face_bbox=face.bbox if face is not None else None,
+            attributes=attrs,
         )
         if not check_quality_passed(quality):
             return _handle_face_detection_error("FACE_QUALITY_TOO_LOW")
@@ -508,6 +556,7 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     deepfake_face_crop = processor.for_deepfake() if processor is not None else None
     # Use artifact-preserving bbox crop for AI detection (NOT ArcFace-aligned).
     ai_face_crop = processor.for_ai_detection() if processor is not None else None
+    face_attributes = _predict_face_attributes(processor, models) if processor is not None else None
 
     small_face_for_ai_crop = False
     face_area = 0.0
@@ -759,11 +808,11 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
     small_face_boost = float(settings.SMALL_FACE_BOOST_MULTIPLIER)
 
     # Base weights for each detector family (on 0-100 scale scores).
-    w_primary = max(0.0, float(settings.AI_FACE_PRIMARY_WEIGHT))    # EfficientNet
+    w_primary = max(0.0, float(settings.DEEPFAKE_EFFICIENTNET_WEIGHT))  # EfficientNet family
     w_extra = max(0.0, float(settings.AI_FACE_EXTRA_WEIGHT))        # ai_vs_deepfake_vs_real
-    w_npr = 0.25 if npr_available else 0.0
-    w_clip = 0.35 if clip_available else 0.0
-    w_vit_v2 = max(0.0, float(settings.DEEPFAKE_VIT_V2_WEIGHT)) if vit_v2_available else 0.0
+    w_npr = max(0.0, float(settings.DEEPFAKE_NPR_WEIGHT)) if npr_available else 0.0
+    w_clip = max(0.0, float(settings.CLIP_FAKE_WEIGHT)) if clip_available else 0.0
+    w_vit_v2 = max(0.0, float(settings.DEEPFAKE_VIT_WEIGHT)) if vit_v2_available else 0.0
 
     if is_low_quality_jpeg:
         # Reduce frequency-domain model weights (EfficientNet, ViT) — they
@@ -873,9 +922,17 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
         or (ai_generated_any_trigger and face_swap_score >= consensus_face_swap_threshold)
     )
 
-    # --- Real suppress: high-confidence real face with moderate AI scores ---
     face_swap_threshold = float(settings.DEEPFAKE_FACE_SWAP_STRONG_THRESHOLD)
     face_swap_flag = face_swap_score >= face_swap_threshold
+
+    clip_veto_real = (
+        clip_available
+        and bool(settings.CLIP_VETO_REAL_ENABLED)
+        and clip_score < float(settings.CLIP_VETO_REAL_THRESHOLD)
+        and not face_swap_flag
+    )
+
+    # --- Real suppress: high-confidence real face with moderate AI scores ---
     likely_real_suppressed = False
     if settings.AI_FACE_REAL_SUPPRESS_ENABLED and not face_swap_flag and face is not None:
         skip_real_suppress = (
@@ -909,12 +966,44 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
                         jpeg_quality, face_confidence, strong_evidence_count, ai_score,
                     )
 
+    if clip_veto_real:
+        ai_generated = False
+        ai_score = min(ai_score, clip_score)
+        likely_real_suppressed = True
+
     is_deepfake = bool(face_swap_flag or ai_generated)
 
     attack_types: list[str] = []
     if face_swap_flag:
-        attack_types.extend(face_swap_result.get("attackTypes", []) or ["SYNTHETIC_IMAGE"])
+        attack_types.append("FACE_SWAP")
     if ai_generated:
+        if npr_score >= 85.0:
+            attack_types.append("PRINT_ATTACK" if is_low_quality_jpeg else "REPLAY_ATTACK")
+        elif npr_score >= 70.0:
+            attack_types.append("REPLAY_ATTACK")
+
+        synthetic_face = clip_score >= max(60.0, float(settings.CLIP_FAKE_THRESHOLD) * 100.0) and npr_score < 50.0
+        if synthetic_face:
+            attack_types.append("SYNTHETIC_FACE")
+            if vit_v2_score >= 75.0 and ai_primary_score >= 70.0:
+                attack_types.append("INJECTED_MEDIA")
+
+        partial_spoof = bool(
+            face_attributes
+            and (face_attributes.get("hasMask") or face_attributes.get("hasHat"))
+            and not face_swap_flag
+        )
+        if partial_spoof:
+            attack_types.append("PARTIAL_SPOOF")
+
+        if (
+            not synthetic_face
+            and 45.0 <= npr_score < 70.0
+            and clip_score < float(settings.CLIP_VETO_REAL_THRESHOLD)
+            and face_confidence >= low_conf_face_limit
+        ):
+            attack_types.append("3D_MASK_ATTACK")
+
         attack_types.append("AI_GENERATED")
     # Keep order stable and unique
     attack_types = list(dict.fromkeys(attack_types))
@@ -942,14 +1031,14 @@ def _run_deepfake_fusion(models, image: np.ndarray, processor: Optional[FaceProc
             "ai_primary=%.2f (full=%.2f crop=%.2f) ai_extra=%.2f (full=%.2f crop=%.2f) "
             "npr=%.2f clip=%.2f (full=%.2f crop=%.2f) vit_v2=%.2f fs=%.2f "
             "hard_single=%s consensus_multi=%s(%d/%d) legacy_hard=%s vote=%s(%d/%d) "
-            "real_suppressed=%s deepfake=%s",
+            "clip_veto=%s real_suppressed=%s deepfake=%s",
             face_confidence, small_face_for_ai_crop, jpeg_quality, ai_score,
             ai_primary_score, ai_primary_full_score, ai_primary_crop_score,
             ai_extra_score, ai_extra_full_score, ai_extra_crop_score,
             npr_score, clip_score, clip_full_score, clip_crop_score, vit_v2_score, face_swap_score,
             ai_generated_hard_block, ai_generated_consensus_multi, consensus_count, consensus_min,
             ai_generated_legacy_hard, ai_generated_vote, vote_count, vote_min_count,
-            likely_real_suppressed, is_deepfake,
+            clip_veto_real, likely_real_suppressed, is_deepfake,
         )
     return fusion_result, timings
 
@@ -1067,6 +1156,18 @@ def _get_face_embedding(models, face_aligned_112: np.ndarray) -> tuple[np.ndarra
     return fused.astype(np.float32), timings
 
 
+def _default_compare_threshold(models) -> float:
+    legacy_threshold = float(settings.FACE_MATCH_THRESHOLD)
+    if legacy_threshold > 1.0:
+        return legacy_threshold
+    if legacy_threshold > 0.0:
+        try:
+            return float(models.face_recognizer.similarity_to_percent(legacy_threshold))
+        except Exception:
+            logger.exception("Failed converting FACE_MATCH_THRESHOLD to calibrated percent")
+    return float(settings.COMPARE_THRESHOLD_DEFAULT)
+
+
 def _endpoint_guard(handler):
     @wraps(handler)
     async def wrapper(*args, **kwargs):
@@ -1079,6 +1180,19 @@ def _endpoint_guard(handler):
             return _error_response(500, "MODEL_ERROR", "Internal Server Error")
 
     return wrapper
+
+
+@router.get("/capabilities")
+async def capabilities(request: Request):
+    catalog = getattr(request.app.state, "service_catalog", None)
+    if catalog is None:
+        return {
+            "version": "missing",
+            "description": "Service catalog not loaded",
+            "endpoints": {},
+            "models": {},
+        }
+    return catalog.capabilities_payload(getattr(request.app.state, "models", None))
 
 
 @router.post("/compare")
@@ -1095,7 +1209,7 @@ async def compare_faces(
     validate_attrs = _parse_bool_form(validateAttributes)
     validate_qual = _parse_bool_form(validateQuality)
 
-    threshold = float(settings.COMPARE_THRESHOLD_DEFAULT)
+    threshold = _default_compare_threshold(models)
     if similarityThreshold:
         try:
             threshold = float(similarityThreshold.strip())
@@ -1147,15 +1261,19 @@ async def compare_faces(
         from app.services.quality import validate_quality as check_quality
 
         t0 = time.perf_counter()
+        source_attrs = _predict_face_attributes(source_proc, models)
+        target_attrs = _predict_face_attributes(target_proc, models)
         src_qual_fut = loop.run_in_executor(GENERAL_EXECUTOR, lambda: check_quality(
             source_img, source_proc.for_quality(),
             landmarks=source_face.landmarks if source_face is not None else None,
             face_bbox=source_face.bbox if source_face is not None else None,
+            attributes=source_attrs,
         ))
         tgt_qual_fut = loop.run_in_executor(GENERAL_EXECUTOR, lambda: check_quality(
             target_img, target_proc.for_quality(),
             landmarks=target_face.landmarks if target_face is not None else None,
             face_bbox=target_face.bbox if target_face is not None else None,
+            attributes=target_attrs,
         ))
         source_quality, target_quality = await asyncio.gather(src_qual_fut, tgt_qual_fut)
         timings["adaptive_quality_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
@@ -1350,10 +1468,14 @@ async def analyze_face(
     image: UploadFile = File(...),
     validateAttributes: Optional[str] = Form(None),
     validateQuality: Optional[str] = Form(None),
+    includeAttributes: Optional[str] = Form(None),
+    includeQuality: Optional[str] = Form(None),
 ):
     models = request.app.state.models
     validate_attrs = _parse_bool_form(validateAttributes)
     validate_qual = _parse_bool_form(validateQuality)
+    return_attrs = _parse_bool_form(includeAttributes) or validate_attrs
+    return_quality = _parse_bool_form(includeQuality) or validate_qual
 
     img = await read_image(image)
     timings: dict[str, float] = {}
@@ -1383,28 +1505,160 @@ async def analyze_face(
     t0 = time.perf_counter()
     result = await _run_in_executor(GENERAL_EXECUTOR, _predict_age_gender_sync)
     timings["age_gender_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+    validation_payload = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _build_validation_payload,
+        face,
+        img,
+        models,
+        return_attrs,
+        return_quality,
+        processor=processor,
+    )
     response_payload = {
         "gender": result["gender"],
         "genderConfidence": _round2(result["genderConfidence"]),
         "ageRange": result["ageRange"],
+        "ageEstimate": _round2(result.get("ageEstimate", 0.0)),
         "face": _build_face_payload(face, models),
-        "validation": await _run_in_executor(
-            GENERAL_EXECUTOR,
-            _build_validation_payload,
-            face,
-            img,
-            models,
-            validate_attrs,
-            validate_qual,
-            processor=processor,
-        ),
+        "validation": validation_payload,
     }
+    if "race" in result:
+        response_payload["race"] = result["race"]
+    if return_quality:
+        response_payload["quality"] = validation_payload.get("quality")
+    if return_attrs:
+        response_payload["attributes"] = _build_enriched_attributes(
+            img,
+            face,
+            processor,
+            models,
+            parser_attributes=validation_payload.get("attributes"),
+            quality_payload=validation_payload.get("quality"),
+        )
     _set_request_observability(
         request,
         model_timings=timings,
         result_summary={
             "gender": response_payload["gender"],
             "ageRange": response_payload["ageRange"],
+        },
+    )
+    return response_payload
+
+
+@router.post("/quality")
+@_endpoint_guard
+async def quality_assessment(
+    request: Request,
+    image: UploadFile = File(...),
+):
+    models = request.app.state.models
+    img = await read_image(image)
+    timings: dict[str, float] = {}
+
+    t0 = time.perf_counter()
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
+        img,
+        models,
+        False,
+        False,
+    )
+    timings["detect_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+    if err:
+        return err
+
+    t0 = time.perf_counter()
+    validation_payload = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _build_validation_payload,
+        face,
+        img,
+        models,
+        True,
+        True,
+        processor=processor,
+    )
+    timings["quality_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+
+    response_payload = {
+        "face": _build_face_payload(face, models),
+        "quality": validation_payload.get("quality"),
+        "attributes": _build_enriched_attributes(
+            img,
+            face,
+            processor,
+            models,
+            parser_attributes=validation_payload.get("attributes"),
+            quality_payload=validation_payload.get("quality"),
+        ),
+    }
+    _set_request_observability(
+        request,
+        model_timings=timings,
+        result_summary={"qualityScore": response_payload["quality"].get("score", 0.0)},
+    )
+    return response_payload
+
+
+@router.post("/attributes")
+@_endpoint_guard
+async def attribute_assessment(
+    request: Request,
+    image: UploadFile = File(...),
+):
+    models = request.app.state.models
+    img = await read_image(image)
+    timings: dict[str, float] = {}
+
+    t0 = time.perf_counter()
+    face, processor, err = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _detect_and_validate,
+        img,
+        models,
+        False,
+        False,
+    )
+    timings["detect_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+    if err:
+        return err
+
+    t0 = time.perf_counter()
+    validation_payload = await _run_in_executor(
+        GENERAL_EXECUTOR,
+        _build_validation_payload,
+        face,
+        img,
+        models,
+        True,
+        True,
+        processor=processor,
+    )
+    timings["attribute_ms"] = _round2((time.perf_counter() - t0) * 1000.0)
+
+    attributes = _build_enriched_attributes(
+        img,
+        face,
+        processor,
+        models,
+        parser_attributes=validation_payload.get("attributes"),
+        quality_payload=validation_payload.get("quality"),
+    )
+    response_payload = {
+        "face": _build_face_payload(face, models),
+        "attributes": attributes,
+        "quality": validation_payload.get("quality"),
+    }
+    _set_request_observability(
+        request,
+        model_timings=timings,
+        result_summary={
+            "majorOcclusion": bool(attributes and attributes.get("majorOcclusion")),
+            "mask": bool(attributes and attributes.get("mask")),
+            "sunglasses": bool(attributes and attributes.get("sunglasses")),
         },
     )
     return response_payload
@@ -1450,7 +1704,14 @@ async def verify_live(
 
     def _run_quality():
         start = time.perf_counter()
-        result = check_quality(img, quality_target, landmarks=face_landmarks, face_bbox=face_bbox)
+        attrs = _predict_face_attributes(processor, models)
+        result = check_quality(
+            img,
+            quality_target,
+            landmarks=face_landmarks,
+            face_bbox=face_bbox,
+            attributes=attrs,
+        )
         return result, (time.perf_counter() - start) * 1000.0
 
     def _run_liveness():

@@ -44,10 +44,10 @@ class CLIPProbe(nn.Module):
         features = features.float()
         # Normalize features
         features = features / (features.norm(dim=-1, keepdim=True) + 1e-8)
-        # Linear probe → sigmoid → score
+        # Linear probe → raw logit (NO sigmoid here)
+        # Service akan apply sigmoid sendiri via: fake_prob = sigmoid(output[0])
         logit = self.classifier(features)
-        score = torch.sigmoid(logit)  # 0 = real, 1 = fake
-        return score  # shape: [batch, 1]
+        return logit  # shape: [batch, 1], positive = fake
 
 
 def load_model(weights_path: str, device: str = "cpu"):

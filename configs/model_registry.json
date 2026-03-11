@@ -1,0 +1,280 @@
+{
+  "version": "2026-03-11",
+  "description": "Endpoint-to-model bundle registry for Vison AI face inference.",
+  "models": {
+    "face_detector": {
+      "setting": "SCRFD_MODEL",
+      "loader": "SCRFDDetector",
+      "role": "shared_face_detection"
+    },
+    "face_recognition_primary": {
+      "setting": "ARCFACE_MODEL",
+      "loader": "ArcFaceRecognizer",
+      "role": "verification_embedding_primary"
+    },
+    "face_recognition_extra": {
+      "setting": "ARCFACE_EXTRA_MODEL",
+      "loader": "ArcFaceRecognizer",
+      "role": "verification_embedding_secondary"
+    },
+    "adaface": {
+      "setting": "ADAFACE_MODEL",
+      "loader": "AdaFaceRecognizer",
+      "role": "quality_adaptive_verification_embedding"
+    },
+    "liveness_ensemble": {
+      "setting": "LIVENESS_MODELS",
+      "loader": "LivenessChecker",
+      "role": "passive_pad_primary"
+    },
+    "cdcn_liveness": {
+      "setting": "CDCN_MODEL",
+      "loader": "CDCNLiveness",
+      "role": "passive_pad_secondary"
+    },
+    "deepfake_ensemble": {
+      "setting": "DEEPFAKE_MODELS",
+      "loader": "DeepfakeDetector",
+      "role": "manipulated_face_detection_primary"
+    },
+    "ai_face_detector": {
+      "setting": "AI_FACE_DETECTOR_MODEL",
+      "loader": "AIFaceDetector",
+      "role": "synthetic_face_detection_primary"
+    },
+    "ai_face_detector_extra": {
+      "setting": "AI_FACE_EXTRA_DETECTOR_MODEL",
+      "loader": "AIFaceDetector",
+      "role": "synthetic_face_detection_secondary"
+    },
+    "npr": {
+      "setting": "NPR_MODEL",
+      "loader": "NPRDetector",
+      "role": "artifact_detector"
+    },
+    "clip_fake": {
+      "setting": "CLIP_FAKE_MODEL",
+      "loader": "CLIPFakeDetector",
+      "role": "open_set_synthetic_face_detector"
+    },
+    "deepfake_vit_v2": {
+      "setting": "DEEPFAKE_VIT_V2_MODEL",
+      "loader": "DeepfakeVitV2Detector",
+      "role": "manipulated_face_detection_secondary"
+    },
+    "face_parser": {
+      "setting": "FACE_PARSING_MODEL",
+      "loader": "FaceParser",
+      "role": "occlusion_and_accessory_parsing"
+    },
+    "age_gender": {
+      "setting": "AGE_GENDER_MODEL",
+      "loader": "AgeGenderEstimator",
+      "role": "age_gender_primary"
+    },
+    "age_gender_vit": {
+      "setting": "AGE_GENDER_VIT_MODEL",
+      "loader": "AgeGenderVitEstimator",
+      "role": "age_gender_secondary"
+    },
+    "fairface": {
+      "setting": "AGE_GENDER_FAIRFACE_MODEL",
+      "loader": "FairFaceEstimator",
+      "role": "demographic_slice_proxy"
+    },
+    "mivolo": {
+      "setting": "MIVOLO_MODEL",
+      "loader": "MiVOLOEstimator",
+      "role": "age_gender_secondary_asia_bias_reduction"
+    },
+    "face_quality_proxy": {
+      "setting": null,
+      "loader": "validate_quality",
+      "role": "heuristic_face_image_quality_proxy"
+    },
+    "face_attributes_proxy": {
+      "setting": null,
+      "loader": "build_attribute_report",
+      "role": "heuristic_attribute_fusion_proxy"
+    }
+  },
+  "bundles": {
+    "shared_face": [
+      "face_detector"
+    ],
+    "verification": [
+      "face_recognition_primary",
+      "face_recognition_extra",
+      "adaface"
+    ],
+    "passive_pad": [
+      "liveness_ensemble",
+      "cdcn_liveness"
+    ],
+    "manipulated_face_detection": [
+      "deepfake_ensemble",
+      "ai_face_detector",
+      "ai_face_detector_extra",
+      "npr",
+      "clip_fake",
+      "deepfake_vit_v2"
+    ],
+    "demographics": [
+      "age_gender",
+      "age_gender_vit",
+      "fairface",
+      "mivolo"
+    ],
+    "face_attributes": [
+      "face_parser",
+      "face_attributes_proxy"
+    ],
+    "face_quality": [
+      "face_quality_proxy"
+    ]
+  },
+  "endpoints": {
+    "compare": {
+      "route": "/api/face/compare",
+      "required_bundles": [
+        "shared_face",
+        "verification"
+      ],
+      "optional_bundles": [
+        "face_quality",
+        "face_attributes"
+      ],
+      "tasks": [
+        "face_verification",
+        "thresholded_match_decision"
+      ]
+    },
+    "similarity": {
+      "route": "/api/face/similarity",
+      "required_bundles": [
+        "shared_face",
+        "verification"
+      ],
+      "optional_bundles": [
+        "face_quality"
+      ],
+      "tasks": [
+        "face_verification_score"
+      ]
+    },
+    "embed": {
+      "route": "/api/face/embed",
+      "required_bundles": [
+        "shared_face",
+        "verification"
+      ],
+      "optional_bundles": [
+        "face_quality"
+      ],
+      "tasks": [
+        "face_embedding_extraction"
+      ]
+    },
+    "liveness": {
+      "route": "/api/face/liveness",
+      "required_bundles": [
+        "shared_face",
+        "passive_pad"
+      ],
+      "optional_bundles": [
+        "face_quality",
+        "face_attributes"
+      ],
+      "tasks": [
+        "passive_pad"
+      ]
+    },
+    "deepfake": {
+      "route": "/api/face/deepfake",
+      "required_bundles": [
+        "shared_face",
+        "manipulated_face_detection"
+      ],
+      "optional_bundles": [
+        "face_quality",
+        "face_attributes"
+      ],
+      "tasks": [
+        "manipulated_face_detection",
+        "synthetic_face_detection"
+      ]
+    },
+    "verify_live": {
+      "route": "/api/face/verify-live",
+      "required_bundles": [
+        "shared_face",
+        "passive_pad",
+        "manipulated_face_detection",
+        "face_quality"
+      ],
+      "optional_bundles": [
+        "face_attributes"
+      ],
+      "tasks": [
+        "passive_pad",
+        "manipulated_face_detection",
+        "face_quality_gate"
+      ]
+    },
+    "analyze": {
+      "route": "/api/face/analyze",
+      "required_bundles": [
+        "shared_face",
+        "demographics"
+      ],
+      "optional_bundles": [
+        "face_attributes",
+        "face_quality"
+      ],
+      "tasks": [
+        "age_estimation",
+        "gender_classification",
+        "optional_demographic_proxy"
+      ]
+    },
+    "quality": {
+      "route": "/api/face/quality",
+      "required_bundles": [
+        "shared_face",
+        "face_quality"
+      ],
+      "optional_bundles": [
+        "face_attributes"
+      ],
+      "tasks": [
+        "face_quality_assessment"
+      ]
+    },
+    "attributes": {
+      "route": "/api/face/attributes",
+      "required_bundles": [
+        "shared_face",
+        "face_attributes",
+        "face_quality"
+      ],
+      "optional_bundles": [],
+      "tasks": [
+        "eyeglasses_detection",
+        "sunglasses_detection",
+        "mask_detection",
+        "hat_detection",
+        "major_occlusion_assessment",
+        "brightness_assessment",
+        "blur_assessment"
+      ]
+    },
+    "capabilities": {
+      "route": "/api/face/capabilities",
+      "required_bundles": [],
+      "optional_bundles": [],
+      "tasks": [
+        "service_capability_discovery"
+      ]
+    }
+  }
+}

@@ -17,6 +17,7 @@ from app.api import face_router
 from app.api.middleware import AIServiceAuth, RequestHardeningMiddleware
 from app.core.config import settings
 from app.core.models import ModelRegistry
+from app.core.service_catalog import load_service_catalog
 
 # --- Logging configuration ---
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -148,6 +149,7 @@ async def lifespan(app: FastAPI):
 
     registry = ModelRegistry()
     await registry.load_all()
+    app.state.service_catalog = load_service_catalog(settings.MODEL_REGISTRY_CONFIG or None)
     app.state.models = registry
     app.state.started_at = time.time()
     app.state.total_requests = 0
@@ -363,5 +365,7 @@ async def health():
         "uptime_seconds": uptime,
         "total_requests": total_requests,
         "avg_latency_ms": avg_latency_ms,
+        "service_catalog_version": getattr(getattr(app.state, "service_catalog", None), "version", "unknown"),
+        "capabilities": getattr(getattr(app.state, "service_catalog", None), "endpoint_names", lambda: [])(),
     }
     return JSONResponse(content=payload, status_code=200 if models_ready else 503)

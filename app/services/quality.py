@@ -13,6 +13,7 @@ def validate_quality(
     face_crop: np.ndarray,
     landmarks: np.ndarray | None = None,
     face_bbox: np.ndarray | None = None,
+    attributes: dict | None = None,
 ) -> dict:
     """
     Compute quality metrics with backward-compatible keys.
@@ -28,6 +29,9 @@ def validate_quality(
     inter_eye = compute_inter_eye_distance(image, landmarks, face_bbox)
     illum = compute_illumination_uniformity(face_crop)
     contrast = compute_contrast(face_crop)
+    face_symmetry = compute_face_symmetry(face_crop, landmarks)
+    occlusion_score = compute_occlusion_score(attributes)
+    background_clutter = compute_background_clutter(image, face_bbox)
 
     # Component scores on 0-100 range.
     sharpness_score = float(np.clip(sharpness, 0.0, 100.0))
@@ -53,15 +57,19 @@ def validate_quality(
         )
     )
     contrast_score = float(np.clip((contrast / max(settings.QUALITY_MIN_CONTRAST, 1e-6)) * 100.0, 0.0, 100.0))
+    background_clean_score = float(np.clip(100.0 - background_clutter, 0.0, 100.0))
 
     # Weighted composite score (ISO-style approximation).
     score = (
-        sharpness_score * 0.25
-        + brightness_score * 0.15
-        + frontal_score * 0.20
-        + illum_score * 0.15
-        + inter_eye_score * 0.15
-        + contrast_score * 0.10
+        sharpness_score * 0.22
+        + brightness_score * 0.13
+        + frontal_score * 0.15
+        + illum_score * 0.12
+        + inter_eye_score * 0.10
+        + contrast_score * 0.08
+        + float(face_symmetry["score"]) * 0.10
+        + occlusion_score * 0.07
+        + background_clean_score * 0.03
     )
 
     return {
@@ -84,6 +92,13 @@ def validate_quality(
             "asymmetry": round(float(illum["asymmetry"]), 2),
             "isUniform": bool(illum["isUniform"]),
         },
+        "faceSymmetry": {
+            "score": round(float(face_symmetry["score"]), 2),
+            "brightnessAsymmetry": round(float(face_symmetry["brightnessAsymmetry"]), 2),
+            "eyeSymmetryError": round(float(face_symmetry["eyeSymmetryError"]), 2),
+        },
+        "occlusionScore": round(float(occlusion_score), 2),
+        "backgroundClutter": round(float(background_clutter), 2),
         "contrast": round(float(contrast), 2),
     }
 
@@ -201,6 +216,74 @@ def compute_illumination_uniformity(face_crop: np.ndarray) -> dict:
 def compute_contrast(face_crop: np.ndarray) -> float:
     gray = _to_gray(face_crop)
     return float(gray.std())
+
+
+def compute_face_symmetry(face_crop: np.ndarray, landmarks: np.ndarray | None) -> dict:
+    illum = compute_illumination_uniformity(face_crop)
+    brightness_asymmetry = float(np.clip(illum["asymmetry"], 0.0, 100.0))
+
+    eye_symmetry_error = 0.0
+    if landmarks is not None:
+        pts = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+        if pts.shape[0] >= 3:
+            left_eye = pts[0]
+            right_eye = pts[1]
+            nose = pts[2]
+            eye_dist = float(np.linalg.norm(right_eye - left_eye))
+            if eye_dist > 1e-6:
+                eye_level = abs(float(left_eye[1] - right_eye[1])) / eye_dist * 100.0
+                eye_mid_x = float((left_eye[0] + right_eye[0]) * 0.5)
+                nose_center = abs(float(nose[0] - eye_mid_x)) / eye_dist * 100.0
+                eye_symmetry_error = float(np.clip((eye_level * 0.6) + (nose_center * 0.4), 0.0, 100.0))
+
+    score = float(np.clip(100.0 - (brightness_asymmetry * 0.55 + eye_symmetry_error * 0.45), 0.0, 100.0))
+    return {
+        "score": score,
+        "brightnessAsymmetry": brightness_asymmetry,
+        "eyeSymmetryError": eye_symmetry_error,
+    }
+
+
+def compute_occlusion_score(attributes: dict | None) -> float:
+    if not attributes:
+        return 100.0
+
+    mask_cov = float(attributes.get("maskCoverage", 0.55 if attributes.get("hasMask") else 0.0))
+    hat_cov = float(attributes.get("hatCoverage", 0.18 if attributes.get("hasHat") else 0.0))
+    glasses_cov = float(attributes.get("glassesCoverage", 0.12 if attributes.get("hasGlasses") else 0.0))
+    occluded_fraction = float(np.clip(mask_cov + hat_cov + glasses_cov, 0.0, 1.0))
+    return float(np.clip((1.0 - occluded_fraction) * 100.0, 0.0, 100.0))
+
+
+def compute_background_clutter(image: np.ndarray, face_bbox: np.ndarray | None) -> float:
+    gray = _to_gray(image)
+    if gray.size == 0:
+        return 0.0
+
+    mask = np.ones_like(gray, dtype=bool)
+    if face_bbox is not None:
+        x1, y1, x2, y2 = np.asarray(face_bbox, dtype=np.float32).tolist()
+        h, w = gray.shape[:2]
+        bw = max(1.0, x2 - x1)
+        bh = max(1.0, y2 - y1)
+        pad_x = int(round(bw * 0.15))
+        pad_y = int(round(bh * 0.15))
+        bx1 = max(0, int(x1 - pad_x))
+        by1 = max(0, int(y1 - pad_y))
+        bx2 = min(w, int(x2 + pad_x))
+        by2 = min(h, int(y2 + pad_y))
+        mask[by1:by2, bx1:bx2] = False
+
+    if int(np.sum(mask)) < 100:
+        return 0.0
+
+    edges = cv2.Canny(gray, 80, 160)
+    edge_density = float(np.mean(edges[mask] > 0))
+    laplacian = cv2.Laplacian(gray, cv2.CV_32F)
+    texture_strength = float(np.std(laplacian[mask]))
+
+    score = edge_density * 160.0 + min(40.0, texture_strength * 0.8)
+    return float(np.clip(score, 0.0, 100.0))
 
 
 def compute_face_size_ratio(bbox: np.ndarray, image_shape: tuple) -> float:

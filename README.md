@@ -1,6 +1,6 @@
-# Vison AI Service (Pure Inference)
+# Vison AI Service
 
-`vison-ai-service` is a stateless Python FastAPI service for face inference only.
+`vison-ai-service` remains a stateless Python FastAPI inference service, and now also includes a separate PyTorch training/evaluation surface for reproducible face-model development.
 
 - No PostgreSQL access
 - No S3 access
@@ -20,6 +20,17 @@ Go backend remains source of truth for auth, billing, object storage, and pgvect
 - FastAPI + ONNX Runtime (CPUExecutionProvider)
 - Receives image(s), returns JSON inference result
 - Stateless
+- Training pipelines live alongside the inference code but do not run inside the inference service process
+
+## Docs
+
+- Audit summary: `docs/repository_audit.md`
+- Architecture and training design: `docs/architecture_and_training.md`
+- Vast.ai training runbook: `docs/vastai_runbook.md`
+- API examples: `docs/api_examples.md`
+- Model cards: `docs/model_cards/`
+- Dataset inventory: `configs/datasets/dataset_inventory.json`
+- Inference endpoint-to-model registry: `configs/model_registry.json`
 
 ## Endpoints
 
@@ -33,6 +44,9 @@ Go backend remains source of truth for auth, billing, object storage, and pgvect
 ### New stateless endpoints
 - `POST /api/face/embed` (replacement for enroll)
 - `POST /api/face/similarity` (replacement for verify)
+- `POST /api/face/quality`
+- `POST /api/face/attributes`
+- `GET /api/face/capabilities`
 
 ### Health
 - `GET /health`
@@ -260,6 +274,11 @@ Use `MODEL_DIR=./models` in `.env` for local Windows run.
 make test
 ```
 
+### Unit tests
+```bash
+make unit
+```
+
 ### Inference benchmark / model checks
 ```bash
 python scripts/test_inference.py
@@ -302,8 +321,97 @@ make calibrate
 
 ### Compile check
 ```bash
-python -m compileall app scripts
+python -m compileall app scripts training tests
 ```
+
+## Training and Evaluation
+
+The supported production training path is the shared config-driven CLI under `training/vison_train`, not the older ad hoc fine-tune scripts.
+
+### Task configs
+
+- `configs/training/deepfake_detection.json`
+- `configs/training/passive_pad.json`
+- `configs/training/face_quality.json`
+- `configs/training/age_gender.json`
+- `configs/training/face_attributes.json`
+- `configs/training/verification.json`
+- `configs/training/face_parser.json`
+
+### Dataset selection
+
+```bash
+python scripts/select_training_datasets.py --task verification --allow-noncommercial
+```
+
+### Leakage-safe manifest split
+
+```bash
+python scripts/build_training_manifests.py \
+  --manifest data/raw/verification_manifest.csv \
+  --group-cols subject_id \
+  --train-output data/manifests/verification/train.csv \
+  --val-output data/manifests/verification/val.csv \
+  --test-output data/manifests/verification/test.csv \
+  --val-ratio 0.1 \
+  --test-ratio 0.1
+```
+
+### Train
+
+```bash
+python scripts/train_pipeline.py --task passive_pad
+python scripts/train_pipeline.py --task verification --override optimization.epochs=24
+```
+
+### Evaluate
+
+```bash
+python scripts/evaluate_pipeline.py --task passive_pad
+python scripts/evaluate_pipeline.py --task verification
+```
+
+### Direct CLI usage
+
+```bash
+python -m training.vison_train fit --config configs/training/deepfake_detection.json
+python -m training.vison_train evaluate --config configs/training/verification.json
+```
+
+## Vast.ai Training
+
+Training is designed to run on Vast.ai GPU instances only. Inference does not depend on Vast.ai.
+
+Recommended assets:
+
+- `Dockerfile.training`
+- `requirements-training.lock.txt`
+- `.env.training.example`
+- `scripts/vastai_train_setup.sh`
+
+Example setup on a Vast.ai instance:
+
+```bash
+cp .env.training.example .env.training
+bash scripts/vastai_train_setup.sh
+bash scripts/vastai_run_task.sh verification
+```
+
+Use a mounted persistent workspace for:
+
+- `/workspace/data`
+- `/workspace/runs`
+- `/workspace/cache`
+
+Checkpoint resume is handled through `optimization.resume_from` in the JSON configs. Mixed precision and multi-GPU training are available through the config and standard `torch.distributed` environment variables.
+
+See `docs/vastai_runbook.md` for the exact Kaggle setup, dataset preparation flow, per-task commands, and artifact retrieval paths.
+
+## Standards and Reporting Notes
+
+- The repo aligns internal reporting with ISO/IEC 30107, ISO/IEC 29794-5, ISO/IEC 19795, ISO/IEC 20059, and FIDO-style concepts where relevant.
+- It does not claim external ISO, NIST, or FIDO certification.
+- Indonesian demographic coverage is currently limited by dataset availability and licensing; see `configs/datasets/dataset_inventory.json` and `docs/repository_audit.md`.
 
 ## Security
 

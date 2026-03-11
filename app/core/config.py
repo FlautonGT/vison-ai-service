@@ -37,6 +37,7 @@ class Settings:
     WORKERS: int = int(os.getenv("FACE_AI_WORKERS", "2"))
     DEBUG: bool = os.getenv("FACE_AI_DEBUG", "false").lower() == "true"
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    MODEL_REGISTRY_CONFIG: str = os.getenv("MODEL_REGISTRY_CONFIG", "")
 
     # Model paths
     MODEL_DIR: str = _resolve_model_dir()
@@ -58,6 +59,7 @@ class Settings:
     ARCFACE_EXTRA_MODEL: str = os.getenv("ARCFACE_EXTRA_MODEL", "w600k_r50.onnx")
     ARCFACE_PRIMARY_WEIGHT: float = float(os.getenv("ARCFACE_PRIMARY_WEIGHT", "0.65"))
     ARCFACE_EXTRA_WEIGHT: float = float(os.getenv("ARCFACE_EXTRA_WEIGHT", "0.35"))
+    FACE_MATCH_THRESHOLD: float = float(os.getenv("FACE_MATCH_THRESHOLD", "0.5"))
     COMPARE_THRESHOLD_DEFAULT: float = float(os.getenv("COMPARE_THRESHOLD_DEFAULT", "74.0"))
     ARCFACE_ADAPTIVE_COMPARE: bool = os.getenv("ARCFACE_ADAPTIVE_COMPARE", "true").lower() == "true"
     ARCFACE_ADAPTIVE_LOW: float = float(os.getenv("ARCFACE_ADAPTIVE_LOW", "70"))
@@ -155,12 +157,18 @@ class Settings:
     # CLIP-based UniversalFakeDetect
     CLIP_FAKE_MODEL: str = os.getenv("CLIP_FAKE_MODEL", "universal_fake_detect.onnx")
     CLIP_FAKE_THRESHOLD: float = float(os.getenv("CLIP_FAKE_THRESHOLD", "0.50"))
+    CLIP_FAKE_WEIGHT: float = float(os.getenv("CLIP_FAKE_WEIGHT", "0.50"))
+    CLIP_VETO_REAL_ENABLED: bool = os.getenv("CLIP_VETO_REAL_ENABLED", "true").lower() == "true"
+    CLIP_VETO_REAL_THRESHOLD: float = float(os.getenv("CLIP_VETO_REAL_THRESHOLD", "20.0"))
 
     # Deepfake ViT v2
     DEEPFAKE_VIT_V2_MODEL: str = os.getenv("DEEPFAKE_VIT_V2_MODEL", "deepfake_vit_v2.onnx")
     DEEPFAKE_VIT_V2_ENABLED: bool = os.getenv("DEEPFAKE_VIT_V2_ENABLED", "true").lower() == "true"
     DEEPFAKE_VIT_V2_THRESHOLD: float = float(os.getenv("DEEPFAKE_VIT_V2_THRESHOLD", "60.0"))
     DEEPFAKE_VIT_V2_WEIGHT: float = float(os.getenv("DEEPFAKE_VIT_V2_WEIGHT", "0.35"))
+    DEEPFAKE_NPR_WEIGHT: float = float(os.getenv("DEEPFAKE_NPR_WEIGHT", "0.20"))
+    DEEPFAKE_VIT_WEIGHT: float = float(os.getenv("DEEPFAKE_VIT_WEIGHT", "0.25"))
+    DEEPFAKE_EFFICIENTNET_WEIGHT: float = float(os.getenv("DEEPFAKE_EFFICIENTNET_WEIGHT", "0.25"))
 
     # CDCN liveness
     CDCN_MODEL: str = os.getenv("CDCN_MODEL", "cdcn_liveness.onnx")

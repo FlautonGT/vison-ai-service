@@ -470,23 +470,24 @@ class FaceDetectionResult:
             return None
         pts = self.landmarks
         mapping = [
-            ("leftEye", pts[0]),
-            ("rightEye", pts[1]),
-            ("leftPupil", pts[0]),
-            ("rightPupil", pts[1]),
-            ("noseTip", pts[2]),
-            ("mouthLeft", pts[3]),
-            ("mouthRight", pts[4]),
+            ("leftEye", pts[0], None),
+            ("rightEye", pts[1], None),
+            ("leftPupil", pts[0], "leftEye"),
+            ("rightPupil", pts[1], "rightEye"),
+            ("noseTip", pts[2], None),
+            ("mouthLeft", pts[3], None),
+            ("mouthRight", pts[4], None),
         ]
         result = []
-        for name, pt in mapping:
-            result.append(
-                {
-                    "name": name,
-                    "x": f"{float(pt[0] / self.image_width):.2f}",
-                    "y": f"{float(pt[1] / self.image_height):.2f}",
-                }
-            )
+        for name, pt, duplicate_of in mapping:
+            entry = {
+                "name": name,
+                "x": f"{float(pt[0] / self.image_width):.2f}",
+                "y": f"{float(pt[1] / self.image_height):.2f}",
+            }
+            if duplicate_of is not None:
+                entry["duplicateOf"] = duplicate_of
+            result.append(entry)
         return result
 
     def crop_face(self, image: np.ndarray, margin: float = 0.1) -> np.ndarray:
@@ -1409,7 +1410,7 @@ class DeepfakeDetector:
             high_risk_threshold = max(0.85, self.threshold + 0.15)
             risk = "HIGH_RISK" if avg_fake >= high_risk_threshold else "MEDIUM_RISK"
 
-        attack_types = ["SYNTHETIC_IMAGE"] if is_deepfake else []
+        attack_types = ["FACE_SWAP"] if is_deepfake else []
         return {
             "isDeepfake": is_deepfake,
             "attackRiskLevel": risk,
@@ -2029,10 +2030,12 @@ class CDCNLiveness:
 
 
 class FaceParser:
-    """BiSeNet face parsing for mask/hat/glasses attributes."""
+    """BiSeNet face parsing for mask/hat/glasses/beard attributes."""
 
     GLASSES_CLASSES = {6}
     HAT_CLASSES = {18}
+    MOUTH_CLASSES = {11, 12, 13}
+    NOSE_CLASS = 10
 
     def __init__(self, model_path: str, providers: Optional[list] = None):
         self.session = None
@@ -2048,13 +2051,64 @@ class FaceParser:
         self.model_name = os.path.basename(getattr(self.session, "_model_path", model_path))
         logger.info("Face parsing model loaded: %s", model_path)
 
+    @staticmethod
+    def _default_attributes() -> dict:
+        return {
+            "hasMask": False,
+            "hasHat": False,
+            "hasGlasses": False,
+            "hasBeard": False,
+            "maskCoverage": 0.0,
+            "hatCoverage": 0.0,
+            "glassesCoverage": 0.0,
+            "faceVisibleRatio": 1.0,
+        }
+
+    @staticmethod
+    def _estimate_beard(seg_map: np.ndarray, face_crop_512: np.ndarray, has_mask: bool) -> bool:
+        if has_mask:
+            return False
+
+        face_mask = seg_map > 0
+        if int(np.sum(face_mask)) < 2500:
+            return False
+
+        gray = cv2.cvtColor(face_crop_512, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        ys, xs = np.where(face_mask)
+        if ys.size == 0 or xs.size == 0:
+            return False
+
+        mouth_y = int(np.mean(np.where(np.isin(seg_map, list(FaceParser.MOUTH_CLASSES)))[0])) if np.any(
+            np.isin(seg_map, list(FaceParser.MOUTH_CLASSES))
+        ) else int(np.percentile(ys, 58))
+        lower_mask = face_mask.copy()
+        lower_mask[:mouth_y, :] = False
+        upper_mask = face_mask.copy()
+        upper_mask[mouth_y:, :] = False
+
+        if int(np.sum(lower_mask)) < 500 or int(np.sum(upper_mask)) < 500:
+            return False
+
+        lower_region = gray[lower_mask]
+        upper_region = gray[upper_mask]
+        lower_dark_ratio = float(np.mean(lower_region < 80.0))
+        brightness_gap = float(np.mean(upper_region) - np.mean(lower_region))
+
+        sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        edge_mag = cv2.magnitude(sobel_x, sobel_y)
+        lower_edge_density = float(np.mean(edge_mag[lower_mask] > 18.0))
+
+        return lower_dark_ratio >= 0.18 and brightness_gap >= 12.0 and lower_edge_density >= 0.16
+
     def predict_attributes(self, face_crop: np.ndarray) -> dict:
         if self.session is None:
-            return {"hasMask": False, "hasHat": False, "hasGlasses": False}
+            return self._default_attributes()
         if face_crop is None or face_crop.size == 0:
-            return {"hasMask": False, "hasHat": False, "hasGlasses": False}
+            return self._default_attributes()
         try:
-            resized = cv2.resize(face_crop, (512, 512)).astype(np.float32) / 255.0
+            face_crop_512 = cv2.resize(face_crop, (512, 512), interpolation=cv2.INTER_LINEAR)
+            resized = face_crop_512.astype(np.float32) / 255.0
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
             tensor = ((resized - mean) / std).transpose(2, 0, 1)[np.newaxis, ...]
@@ -2066,23 +2120,32 @@ class FaceParser:
 
             has_glasses = bool(self.GLASSES_CLASSES & classes)
             has_hat = bool(self.HAT_CLASSES & classes)
-            nose_pixels = int(np.sum(seg_map == 10))
-            mouth_pixels = int(np.sum((seg_map == 11) | (seg_map == 12) | (seg_map == 13)))
+            nose_pixels = int(np.sum(seg_map == self.NOSE_CLASS))
+            mouth_pixels = int(np.sum(np.isin(seg_map, list(self.MOUTH_CLASSES))))
             total_face = int(np.sum(seg_map > 0))
             visible_ratio = (nose_pixels + mouth_pixels) / max(total_face, 1)
             if total_face < 2500:
                 has_mask = False
             else:
                 has_mask = visible_ratio < 0.08
+            mask_coverage = float(np.clip((0.08 - visible_ratio) / 0.08, 0.0, 1.0)) if has_mask else 0.0
+            hat_coverage = float(np.sum(seg_map == 18) / max(total_face, 1))
+            glasses_coverage = float(np.sum(seg_map == 6) / max(total_face, 1))
+            has_beard = self._estimate_beard(seg_map, face_crop_512, has_mask)
 
             return {
                 "hasMask": has_mask,
                 "hasHat": has_hat,
                 "hasGlasses": has_glasses,
+                "hasBeard": has_beard,
+                "maskCoverage": round(mask_coverage, 4),
+                "hatCoverage": round(float(np.clip(hat_coverage, 0.0, 1.0)), 4),
+                "glassesCoverage": round(float(np.clip(glasses_coverage, 0.0, 1.0)), 4),
+                "faceVisibleRatio": round(float(np.clip(visible_ratio, 0.0, 1.0)), 4),
             }
         except Exception:
             logger.exception("Face parsing inference failed")
-            return {"hasMask": False, "hasHat": False, "hasGlasses": False}
+            return self._default_attributes()
 
 
 class AgeGenderVitEstimator:
@@ -2863,6 +2926,7 @@ class AgeGenderEstimator:
             "gender": result["gender"],
             "genderConfidence": result["genderConfidence"],
             "ageRange": result["ageRange"],
+            "ageEstimate": round(float(result.get("ageValue", 0.0)), 2),
         }
         if "race" in result:
             payload["race"] = result["race"]
