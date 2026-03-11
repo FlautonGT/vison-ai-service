@@ -137,6 +137,9 @@ class IdentityImageDataset(Dataset):
         self.image_col = image_col
         self.identity_col = identity_col
         self.transform = transform
+        identity_values = self.frame[self.identity_col].astype(str)
+        unique_ids = sorted(identity_values.unique().tolist())
+        self.identity_to_index = {identity: index for index, identity in enumerate(unique_ids)}
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -144,7 +147,7 @@ class IdentityImageDataset(Dataset):
     def __getitem__(self, index: int):
         row = self.frame.iloc[index]
         image = self.transform(_load_rgb(str(row[self.image_col])))
-        identity = torch.tensor(int(row[self.identity_col]), dtype=torch.long)
+        identity = torch.tensor(self.identity_to_index[str(row[self.identity_col])], dtype=torch.long)
         return image, identity
 
 

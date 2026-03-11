@@ -20,6 +20,17 @@ cd "${ROOT_DIR}"
 
 SUMMARY_PATH="${LOG_ROOT}/run_fast24h_summary.tsv"
 MAIN_LOG="${LOG_ROOT}/run_fast24h.log"
+LOCK_FILE="${LOG_ROOT}/run_fast24h.lock"
+
+if [ -f "${LOCK_FILE}" ]; then
+  existing_pid="$(cat "${LOCK_FILE}" 2>/dev/null || true)"
+  if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+    echo "Another fast24h queue is already running with PID ${existing_pid}. Remove ${LOCK_FILE} only if that process is gone."
+    exit 1
+  fi
+fi
+echo "$$" > "${LOCK_FILE}"
+trap 'rm -f "${LOCK_FILE}"' EXIT
 
 if [ -f ".env.training" ]; then
   set -a
