@@ -12,6 +12,8 @@ ARTIFACT_ROOT="${ARTIFACT_ROOT:-/workspace/artifacts}"
 PREFERRED_REGION="${PREFERRED_REGION:-indonesia}"
 ALLOW_RESTRICTED="${ALLOW_RESTRICTED:-true}"
 ALLOW_FALLBACK="${ALLOW_FALLBACK:-true}"
+ALLOW_NONCOMMERCIAL="${ALLOW_NONCOMMERCIAL:-false}"
+ALLOW_NONMODIFIABLE="${ALLOW_NONMODIFIABLE:-false}"
 TRAINING_VENV="${TRAINING_VENV:-${ROOT_DIR}/.venv-training}"
 TRAINING_PYTHON="${TRAINING_PYTHON:-${TRAINING_VENV}/bin/python}"
 PREPARE_FLAGS=(--task "${TASK}" --preferred-region "${PREFERRED_REGION}")
@@ -21,6 +23,12 @@ if [ "${ALLOW_RESTRICTED}" = "true" ]; then
 fi
 if [ "${ALLOW_FALLBACK}" = "true" ]; then
   PREPARE_FLAGS+=(--allow-fallback)
+fi
+if [ "${ALLOW_NONCOMMERCIAL}" = "true" ]; then
+  PREPARE_FLAGS+=(--allow-noncommercial)
+fi
+if [ "${ALLOW_NONMODIFIABLE}" = "true" ]; then
+  PREPARE_FLAGS+=(--allow-nonmodifiable)
 fi
 
 cd "${ROOT_DIR}"
