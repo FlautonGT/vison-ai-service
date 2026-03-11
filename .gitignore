@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.production
+!.env.training.example
 
 # Python cache/build
 __pycache__/

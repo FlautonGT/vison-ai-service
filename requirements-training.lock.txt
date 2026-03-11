@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+numpy==1.26.4
+Pillow==11.1.0
+opencv-python-headless==4.10.0.84
+pandas==2.2.3
+scikit-learn==1.6.1
+matplotlib==3.10.0
+torch==2.6.0
+torchvision==0.21.0
+onnx==1.17.0
+onnxruntime-gpu==1.20.1
+wandb==0.19.8
+mlflow==2.20.1
+kaggle==1.7.4.2
+requests==2.32.3

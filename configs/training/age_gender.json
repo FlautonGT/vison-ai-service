@@ -1,0 +1,51 @@
+{
+  "task": {
+    "name": "age_gender",
+    "type": "age_gender_multitask",
+    "reporting": "demographics"
+  },
+  "data": {
+    "manifest_root": ".",
+    "train_manifest": "data/manifests/age_gender/train.csv",
+    "val_manifest": "data/manifests/age_gender/val.csv",
+    "image_col": "image_path",
+    "age_col": "age",
+    "gender_col": "gender_id"
+  },
+  "model": {
+    "backbone": "efficientnet_b0",
+    "input_size": 224,
+    "pretrained": true,
+    "dropout": 0.2
+  },
+  "optimization": {
+    "epochs": 15,
+    "batch_size": 32,
+    "num_workers": 4,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "mixed_precision": true,
+    "grad_clip_norm": 1.0,
+    "checkpoint_dir": "runs/age_gender/checkpoints",
+    "resume_from": null
+  },
+  "evaluation": {
+    "report_dir": "runs/age_gender/reports",
+    "slice_columns": [
+      "gender_label",
+      "age_group",
+      "skin_tone_proxy",
+      "region_proxy"
+    ]
+  },
+  "logging": {
+    "report_to": "none",
+    "project": "vison-ai",
+    "run_name": "age-gender-baseline"
+  },
+  "standards_alignment": {
+    "notes": [
+      "Age and gender are demographic predictions, not identity or legal truth. Document downstream use restrictions."
+    ]
+  }
+}

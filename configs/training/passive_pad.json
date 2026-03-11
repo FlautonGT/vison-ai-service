@@ -1,0 +1,54 @@
+{
+  "task": {
+    "name": "passive_pad",
+    "type": "binary_classification",
+    "reporting": "pad"
+  },
+  "data": {
+    "manifest_root": ".",
+    "train_manifest": "data/manifests/passive_pad/train.csv",
+    "val_manifest": "data/manifests/passive_pad/val.csv",
+    "image_col": "image_path",
+    "label_col": "is_attack",
+    "attack_type_col": "attack_type"
+  },
+  "model": {
+    "backbone": "mobilenet_v3_large",
+    "input_size": 224,
+    "pretrained": true,
+    "dropout": 0.2
+  },
+  "optimization": {
+    "epochs": 18,
+    "batch_size": 48,
+    "num_workers": 4,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "mixed_precision": true,
+    "grad_clip_norm": 1.0,
+    "checkpoint_dir": "runs/passive_pad/checkpoints",
+    "resume_from": null
+  },
+  "evaluation": {
+    "report_dir": "runs/passive_pad/reports",
+    "threshold_objective": "balanced_accuracy",
+    "slice_columns": [
+      "gender",
+      "age_group",
+      "skin_tone_proxy",
+      "region_proxy"
+    ]
+  },
+  "logging": {
+    "report_to": "none",
+    "project": "vison-ai",
+    "run_name": "passive-pad-baseline"
+  },
+  "standards_alignment": {
+    "notes": [
+      "Keep bona fide and attack samples split by subject and capture session.",
+      "Use APCER, BPCER, and ACER for internal reporting aligned with ISO/IEC 30107 concepts.",
+      "Do not claim certification without external conformance testing."
+    ]
+  }
+}

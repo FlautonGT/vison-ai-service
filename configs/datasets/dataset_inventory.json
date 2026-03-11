@@ -1,0 +1,570 @@
+{
+  "generated_at": "2026-03-11",
+  "schema_version": 2,
+  "selection_policy": {
+    "region_priority": [
+      "indonesia",
+      "southeast_asia",
+      "asia",
+      "global"
+    ],
+    "default_requirements": {
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "allowed_statuses": [
+        "approved"
+      ]
+    },
+    "notes": [
+      "Kaggle should be searched first on the Vast.ai GPU instance using authenticated Kaggle API access.",
+      "Legally unclear, research-only, non-commercial, or no-derivatives datasets are blocked by default and require explicit override."
+    ]
+  },
+  "datasets": [
+    {
+      "id": "arifnuriman/indonesian-public-figure-faces",
+      "title": "Indonesian Public Figure Faces",
+      "source": "Kaggle mirror",
+      "kaggle_url": "https://www.kaggle.com/datasets/arifnuriman/indonesian-public-figure-faces",
+      "download": {
+        "kaggle_ref": "arifnuriman/indonesian-public-figure-faces"
+      },
+      "license": "Unknown",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Public-figure face collection with unclear rights chain.",
+      "collection_method": "Likely web aggregation.",
+      "scraped_or_curated": "appears_scraped",
+      "task_fit": [
+        "verification",
+        "face_attributes"
+      ],
+      "label_coverage": [
+        "identity"
+      ],
+      "region_coverage": [
+        "indonesia"
+      ],
+      "regional_relevance": "High geographic relevance, low governance confidence.",
+      "identity_leakage_risk": "Very high",
+      "duplicate_risk": "High",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Do not use unless provenance, license, and publicity-rights review are completed.",
+      "status": "rejected",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "trainingdatapro/asian-kyc-photo-dataset",
+      "title": "Asian People KYC Photo Dataset",
+      "source": "Kaggle mirror of vendor dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/trainingdatapro/asian-kyc-photo-dataset",
+      "download": {
+        "kaggle_ref": "trainingdatapro/asian-kyc-photo-dataset"
+      },
+      "license": "CC BY-NC-ND 4.0",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Commercial vendor KYC dataset mirror.",
+      "collection_method": "Curated selfie and document capture pairs.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "verification",
+        "selfie_id_matching"
+      ],
+      "label_coverage": [
+        "subject_id",
+        "selfie_vs_document_pairing"
+      ],
+      "region_coverage": [
+        "southeast_asia",
+        "asia"
+      ],
+      "regional_relevance": "Strong Asia and SEA relevance.",
+      "identity_leakage_risk": "High unless split by subject and capture session",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown; treat as sensitive identity data.",
+      "usage_constraints": "Research/evaluation only unless separately licensed.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "axondata/selfie-and-official-id-photo-dataset-18k-images",
+      "title": "Selfie and Official ID Photo Dataset",
+      "source": "Kaggle mirror of commercial dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/axondata/selfie-and-official-id-photo-dataset-18k-images",
+      "download": {
+        "kaggle_ref": "axondata/selfie-and-official-id-photo-dataset-18k-images"
+      },
+      "license": "CC BY-NC 4.0",
+      "commercial_use_ok": false,
+      "modifiable": true,
+      "provenance": "Commercial vendor dataset mirror.",
+      "collection_method": "Curated ID/selfie pairs.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "verification",
+        "selfie_id_matching"
+      ],
+      "label_coverage": [
+        "subject_id",
+        "selfie_vs_document_pairing"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Useful fallback for verification, not SEA-specific.",
+      "identity_leakage_risk": "High unless subject-disjoint",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown; treat as sensitive identity data.",
+      "usage_constraints": "Research/evaluation only unless separately licensed.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "trainingdatapro/asian-people-liveness-detection-video-dataset",
+      "title": "Asian People Liveness Detection Video Dataset",
+      "source": "Kaggle mirror of vendor dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/trainingdatapro/asian-people-liveness-detection-video-dataset",
+      "download": {
+        "kaggle_ref": "trainingdatapro/asian-people-liveness-detection-video-dataset"
+      },
+      "license": "CC BY-NC-ND 4.0",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Vendor anti-spoofing dataset mirror.",
+      "collection_method": "Curated capture sessions with bona fide and attack samples.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "passive_pad",
+        "bona_fide_reference"
+      ],
+      "label_coverage": [
+        "bona_fide",
+        "attack",
+        "video"
+      ],
+      "region_coverage": [
+        "southeast_asia",
+        "asia"
+      ],
+      "regional_relevance": "High relevance for SEA image-based PAD bootstrapping.",
+      "identity_leakage_risk": "Moderate unless split by subject and session",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Research/evaluation only unless separately licensed.",
+      "status": "restricted",
+      "recommended_split": "subject_and_attack_disjoint"
+    },
+    {
+      "id": "trainingdatapro/ibeta-level-1-liveness-detection-dataset-part-1",
+      "title": "iBeta Level 1 Liveness Detection Dataset",
+      "source": "Kaggle mirror of vendor dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/trainingdatapro/ibeta-level-1-liveness-detection-dataset-part-1",
+      "download": {
+        "kaggle_ref": "trainingdatapro/ibeta-level-1-liveness-detection-dataset-part-1"
+      },
+      "license": "CC BY-NC-ND 4.0",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Vendor attack-focused PAD evaluation set mirror.",
+      "collection_method": "Curated attack recordings.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "passive_pad",
+        "pad_evaluation"
+      ],
+      "label_coverage": [
+        "attack_type",
+        "video_attack"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Evaluation fallback only.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Use only for internal evaluation unless separately licensed.",
+      "status": "restricted",
+      "recommended_split": "attack_type_and_session_disjoint"
+    },
+    {
+      "id": "axondata/anti-spoofing-live-dataset",
+      "title": "Anti-Spoofing Real Dataset",
+      "source": "Kaggle mirror of commercial dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/axondata/anti-spoofing-live-dataset",
+      "download": {
+        "kaggle_ref": "axondata/anti-spoofing-live-dataset"
+      },
+      "license": "CC BY-NC 4.0",
+      "commercial_use_ok": false,
+      "modifiable": true,
+      "provenance": "Commercial bona fide face dataset mirror.",
+      "collection_method": "Curated capture sessions.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "passive_pad",
+        "bona_fide_reference"
+      ],
+      "label_coverage": [
+        "bona_fide"
+      ],
+      "region_coverage": [
+        "asia",
+        "global"
+      ],
+      "regional_relevance": "Useful bona fide fallback.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Research/evaluation only unless separately licensed.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "kshitizbhargava/deepfake-face-images",
+      "title": "StyleGAN / StyleGAN2 Deepfake Face Images",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/kshitizbhargava/deepfake-face-images",
+      "download": {
+        "kaggle_ref": "kshitizbhargava/deepfake-face-images"
+      },
+      "license": "MIT",
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "provenance": "Merged real-vs-fake dataset with synthetic face emphasis.",
+      "collection_method": "Dataset merge and augmentation.",
+      "scraped_or_curated": "mixed",
+      "task_fit": [
+        "deepfake_detection",
+        "synthetic_face_detection"
+      ],
+      "label_coverage": [
+        "real",
+        "synthetic"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback-only because SEA representation is not documented.",
+      "identity_leakage_risk": "Moderate if source identities are reused",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Validate upstream provenance before production use.",
+      "status": "fallback_only",
+      "recommended_split": "identity_or_source_disjoint"
+    },
+    {
+      "id": "nanduncs/1000-videos-split",
+      "title": "FaceForensics++ and Celeb-DF Combined Deepfake Data",
+      "source": "Kaggle mirror",
+      "kaggle_url": "https://www.kaggle.com/datasets/nanduncs/1000-videos-split",
+      "download": {
+        "kaggle_ref": "nanduncs/1000-videos-split"
+      },
+      "license": "Mirror license conflicts with stricter upstream terms",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Mirror of research datasets with stricter upstream controls.",
+      "collection_method": "Dataset merge of existing academic sources.",
+      "scraped_or_curated": "mixed",
+      "task_fit": [
+        "deepfake_detection",
+        "manipulated_face_detection"
+      ],
+      "label_coverage": [
+        "real",
+        "fake",
+        "video_frame"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback evaluation source only.",
+      "identity_leakage_risk": "High unless split by source video and identity",
+      "duplicate_risk": "High",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Do not use unless upstream terms are explicitly accepted.",
+      "status": "rejected",
+      "recommended_split": "video_and_identity_disjoint"
+    },
+    {
+      "id": "ghaidaalatoum/fairface",
+      "title": "FairFace",
+      "source": "Kaggle mirror with official upstream project",
+      "kaggle_url": "https://www.kaggle.com/datasets/ghaidaalatoum/fairface",
+      "download": {
+        "kaggle_ref": "ghaidaalatoum/fairface"
+      },
+      "license": "Official project states CC BY 4.0",
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "provenance": "Official demographic benchmark mirrored on Kaggle.",
+      "collection_method": "Curated face dataset with demographic labels.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "age_estimation",
+        "gender_classification",
+        "demographic_slice_evaluation"
+      ],
+      "label_coverage": [
+        "race",
+        "gender",
+        "age_group"
+      ],
+      "region_coverage": [
+        "global",
+        "asia",
+        "southeast_asia"
+      ],
+      "regional_relevance": "Useful for gender and demographic slice reporting, but not Indonesia-specific.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Low_to_moderate",
+      "minors_sensitive_risk_note": "Includes age groups that may cover minors.",
+      "usage_constraints": "Prefer official source verification before release.",
+      "status": "approved",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "jangedoo/utkface-new",
+      "title": "UTKFace",
+      "source": "Kaggle mirror",
+      "kaggle_url": "https://www.kaggle.com/datasets/jangedoo/utkface-new",
+      "download": {
+        "kaggle_ref": "jangedoo/utkface-new"
+      },
+      "license": "Original authors; upstream non-commercial research use",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Academic dataset mirrored on Kaggle.",
+      "collection_method": "Curated face images with filename-encoded labels.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "age_estimation",
+        "gender_classification",
+        "demographic_slice_evaluation"
+      ],
+      "label_coverage": [
+        "age",
+        "gender",
+        "ethnicity"
+      ],
+      "region_coverage": [
+        "global",
+        "asia"
+      ],
+      "regional_relevance": "Fallback age source, not SEA focused.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Includes minors.",
+      "usage_constraints": "Research-only unless rights are separately obtained.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "arashnic/faces-age-detection-dataset",
+      "title": "Faces Age Detection Dataset",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/arashnic/faces-age-detection-dataset",
+      "download": {
+        "kaggle_ref": "arashnic/faces-age-detection-dataset"
+      },
+      "license": "CC0",
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "provenance": "Permissive mirror with weaker provenance chain than official academic sources.",
+      "collection_method": "Dataset aggregation.",
+      "scraped_or_curated": "mixed",
+      "task_fit": [
+        "age_estimation"
+      ],
+      "label_coverage": [
+        "age"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback-only for exact age training.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Validate provenance before production use.",
+      "status": "fallback_only",
+      "recommended_split": "subject_disjoint_if_possible"
+    },
+    {
+      "id": "janwidziski/face-obstructions",
+      "title": "Face Obstruction Detection",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/janwidziski/face-obstructions",
+      "download": {
+        "kaggle_ref": "janwidziski/face-obstructions"
+      },
+      "license": "CC0",
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "provenance": "Published obstruction classification dataset.",
+      "collection_method": "Curated image classes.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "face_attributes",
+        "major_occlusion_detection"
+      ],
+      "label_coverage": [
+        "glasses",
+        "mask",
+        "sunglasses",
+        "hand",
+        "other",
+        "none"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Approved fallback for attributes, but not SEA specific.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Commercially permissive.",
+      "status": "approved",
+      "recommended_split": "subject_or_session_disjoint"
+    },
+    {
+      "id": "swagatajana/face-mask-detection",
+      "title": "Face Mask Detection",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/swagatajana/face-mask-detection",
+      "download": {
+        "kaggle_ref": "swagatajana/face-mask-detection"
+      },
+      "license": "MIT",
+      "commercial_use_ok": true,
+      "modifiable": true,
+      "provenance": "Small targeted accessory dataset.",
+      "collection_method": "Curated image classes.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "face_attributes"
+      ],
+      "label_coverage": [
+        "mask",
+        "sunglasses",
+        "none"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Approved fallback supplement.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Commercially permissive.",
+      "status": "approved",
+      "recommended_split": "subject_disjoint_if_possible"
+    },
+    {
+      "id": "mantasu/glasses-and-coverings",
+      "title": "Glasses and Coverings",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/mantasu/glasses-and-coverings",
+      "download": {
+        "kaggle_ref": "mantasu/glasses-and-coverings"
+      },
+      "license": "CC BY-NC 4.0",
+      "commercial_use_ok": false,
+      "modifiable": true,
+      "provenance": "Small accessory classification dataset.",
+      "collection_method": "Curated image classes.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "face_attributes"
+      ],
+      "label_coverage": [
+        "plain",
+        "glasses",
+        "sunglasses",
+        "coverings"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback research supplement.",
+      "identity_leakage_risk": "High if duplicates are not removed",
+      "duplicate_risk": "High",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Non-commercial only.",
+      "status": "restricted",
+      "recommended_split": "deduplicate_then_subject_disjoint"
+    },
+    {
+      "id": "jessicali9530/celeba-dataset",
+      "title": "CelebA Dataset",
+      "source": "Kaggle mirror of academic dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/jessicali9530/celeba-dataset",
+      "download": {
+        "kaggle_ref": "jessicali9530/celeba-dataset"
+      },
+      "license": "Mirror of CelebA academic dataset; treat as restricted unless official terms are reviewed",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Mirror of CelebA.",
+      "collection_method": "Academic curated celebrity attributes dataset.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "face_attributes",
+        "gender_classification"
+      ],
+      "label_coverage": [
+        "eyeglasses",
+        "wearing_hat",
+        "gender",
+        "many_face_attributes"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback-only for missing hat/eyeglasses labels.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Low_to_moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Require official CelebA terms review before use.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
+      "id": "minipromax/celebamask-hq",
+      "title": "CelebAMask-HQ",
+      "source": "Kaggle mirror of academic dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/minipromax/celebamask-hq",
+      "download": {
+        "kaggle_ref": "minipromax/celebamask-hq"
+      },
+      "license": "Mirror of CelebAMask-HQ; treat as restricted unless official terms are reviewed",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Mirror of CelebAMask-HQ face parsing dataset.",
+      "collection_method": "Academic curated facial segmentation annotations.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "face_parsing",
+        "face_attributes"
+      ],
+      "label_coverage": [
+        "segmentation_mask",
+        "glasses",
+        "hat",
+        "face_parts"
+      ],
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Fallback-only support set for parser fine-tuning.",
+      "identity_leakage_risk": "Moderate",
+      "duplicate_risk": "Low_to_moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Require official CelebAMask-HQ terms review before use.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    }
+  ]
+}

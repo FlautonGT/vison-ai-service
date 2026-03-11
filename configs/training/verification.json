@@ -1,0 +1,57 @@
+{
+  "task": {
+    "name": "verification_embedding",
+    "type": "metric_learning",
+    "reporting": "verification"
+  },
+  "data": {
+    "manifest_root": ".",
+    "train_manifest": "data/manifests/verification/train.csv",
+    "val_manifest": "data/manifests/verification/val.csv",
+    "pair_manifest": "data/manifests/verification/pairs_val.csv",
+    "image_col": "image_path",
+    "identity_col": "subject_id",
+    "left_image_col": "left_image_path",
+    "right_image_col": "right_image_path",
+    "pair_label_col": "is_match"
+  },
+  "model": {
+    "backbone": "resnet50",
+    "input_size": 224,
+    "embedding_dim": 512,
+    "pretrained": true,
+    "dropout": 0.2
+  },
+  "optimization": {
+    "epochs": 20,
+    "batch_size": 48,
+    "num_workers": 4,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "mixed_precision": true,
+    "grad_clip_norm": 1.0,
+    "checkpoint_dir": "runs/verification/checkpoints",
+    "resume_from": null
+  },
+  "evaluation": {
+    "report_dir": "runs/verification/reports",
+    "slice_columns": [
+      "gender",
+      "age_group",
+      "skin_tone_proxy",
+      "region_proxy"
+    ]
+  },
+  "logging": {
+    "report_to": "none",
+    "project": "vison-ai",
+    "run_name": "verification-baseline"
+  },
+  "standards_alignment": {
+    "notes": [
+      "Use subject-disjoint train, validation, and pair manifests.",
+      "Report FAR, FRR, FMR, FNMR, ROC, and DET internally following ISO/IEC 19795-style reporting concepts.",
+      "Calibrated operating thresholds still require deployment-specific validation."
+    ]
+  }
+}

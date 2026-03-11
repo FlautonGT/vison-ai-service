@@ -1,0 +1,52 @@
+{
+  "task": {
+    "name": "deepfake_detection",
+    "type": "binary_classification",
+    "reporting": "binary"
+  },
+  "data": {
+    "manifest_root": ".",
+    "train_manifest": "data/manifests/deepfake/train.csv",
+    "val_manifest": "data/manifests/deepfake/val.csv",
+    "image_col": "image_path",
+    "label_col": "label"
+  },
+  "model": {
+    "backbone": "efficientnet_b0",
+    "input_size": 224,
+    "pretrained": true,
+    "dropout": 0.2
+  },
+  "optimization": {
+    "epochs": 12,
+    "batch_size": 32,
+    "num_workers": 4,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "mixed_precision": true,
+    "grad_clip_norm": 1.0,
+    "checkpoint_dir": "runs/deepfake/checkpoints",
+    "resume_from": null
+  },
+  "evaluation": {
+    "report_dir": "runs/deepfake/reports",
+    "threshold_objective": "balanced_accuracy",
+    "slice_columns": [
+      "gender",
+      "age_group",
+      "skin_tone_proxy",
+      "region_proxy"
+    ]
+  },
+  "logging": {
+    "report_to": "none",
+    "project": "vison-ai",
+    "run_name": "deepfake-baseline"
+  },
+  "standards_alignment": {
+    "notes": [
+      "Use manipulated-face and synthetic-face evaluation as internal benchmarking only.",
+      "Do not claim ISO/IEC 20059 conformance without external morphing-attack protocol validation."
+    ]
+  }
+}

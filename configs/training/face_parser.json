@@ -1,0 +1,40 @@
+{
+  "task": {
+    "name": "face_parsing",
+    "type": "segmentation",
+    "reporting": "segmentation"
+  },
+  "data": {
+    "manifest_root": ".",
+    "train_manifest": "data/manifests/face_parser/train.csv",
+    "val_manifest": "data/manifests/face_parser/val.csv",
+    "image_col": "image_path",
+    "mask_col": "mask_path",
+    "num_classes": 19
+  },
+  "model": {
+    "backbone": "deeplabv3_mobilenet_v3_large",
+    "input_size": 512,
+    "pretrained": true
+  },
+  "optimization": {
+    "epochs": 20,
+    "batch_size": 8,
+    "num_workers": 4,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "mixed_precision": true,
+    "grad_clip_norm": 1.0,
+    "grad_accum_steps": 1,
+    "checkpoint_dir": "runs/face_parser/checkpoints",
+    "resume_from": null
+  },
+  "evaluation": {
+    "report_dir": "runs/face_parser/reports"
+  },
+  "logging": {
+    "report_to": "none",
+    "project": "vison-ai",
+    "run_name": "face-parser-baseline"
+  }
+}

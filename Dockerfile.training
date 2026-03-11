@@ -1,0 +1,23 @@
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace/vison-ai-service
+
+WORKDIR /workspace/vison-ai-service
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-training.lock.txt .
+RUN pip install -r requirements-training.lock.txt
+
+COPY . .
+
+CMD ["bash"]
