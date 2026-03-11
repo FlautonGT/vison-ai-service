@@ -59,7 +59,8 @@ def _source_id(path: Path) -> str:
 
 
 def _detect_binary_label(path: Path) -> int | None:
-    lowered = " ".join(_slug(part) for part in path.parts)
+    context_parts = [_slug(part) for part in path.parts[-3:]]
+    lowered = " ".join(context_parts)
     if any(token in lowered for token in FAKE_TOKENS):
         return 1
     if any(token in lowered for token in REAL_TOKENS):
@@ -68,7 +69,7 @@ def _detect_binary_label(path: Path) -> int | None:
 
 
 def _detect_attack_type(path: Path) -> str:
-    lowered = " ".join(_slug(part) for part in path.parts)
+    lowered = " ".join(_slug(part) for part in path.parts[-4:])
     for token in ["print", "replay", "mask", "paper", "screen", "photo", "video", "synthetic"]:
         if token in lowered:
             return token
