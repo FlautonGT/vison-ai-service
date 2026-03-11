@@ -44,6 +44,7 @@ TASK_PREFERRED_DATASETS = {
     "verification": [
         "trainingdatapro/asian-kyc-photo-dataset",
         "axondata/selfie-and-official-id-photo-dataset-18k-images",
+        "jessicali9530/celeba-dataset",
     ],
     "passive_pad": [
         "trainingdatapro/asian-people-liveness-detection-video-dataset",
@@ -60,6 +61,26 @@ TASK_PREFERRED_DATASETS = {
         "jangedoo/utkface-new",
         "arashnic/faces-age-detection-dataset",
     ],
+    "face_attributes": [
+        "jessicali9530/celeba-dataset",
+        "janwidziski/face-obstructions",
+        "swagatajana/face-mask-detection",
+        "mantasu/glasses-and-coverings",
+        "minipromax/celebamask-hq",
+    ],
+    "face_parser": [
+        "minipromax/celebamask-hq",
+    ],
+}
+
+TASK_DEFAULT_MAX_DATASETS = {
+    "verification": 6,
+    "passive_pad": 6,
+    "deepfake": 4,
+    "age_gender": 4,
+    "face_attributes": 6,
+    "face_quality": 5,
+    "face_parser": 2,
 }
 
 
@@ -291,7 +312,7 @@ def main() -> int:
     parser.add_argument("--data-root", default="data/raw")
     parser.add_argument("--manifest-root", default="data/manifests")
     parser.add_argument("--inventory", default="configs/datasets/dataset_inventory.json")
-    parser.add_argument("--max-datasets", type=int, default=4)
+    parser.add_argument("--max-datasets", type=int)
     parser.add_argument("--allow-noncommercial", action="store_true")
     parser.add_argument("--allow-nonmodifiable", action="store_true")
     parser.add_argument("--allow-restricted", action="store_true")
@@ -300,6 +321,8 @@ def main() -> int:
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--force-download", action="store_true")
     args = parser.parse_args()
+    if args.max_datasets is None:
+        args.max_datasets = TASK_DEFAULT_MAX_DATASETS.get(args.task, 4)
 
     raw_root = (ROOT_DIR / args.data_root).resolve()
     manifest_dir = (ROOT_DIR / args.manifest_root / args.task).resolve()

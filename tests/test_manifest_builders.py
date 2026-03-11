@@ -11,6 +11,7 @@ from PIL import Image
 from training.vison_train.data.builders import (
     build_age_gender_manifest,
     build_celebamaskhq_parser_manifest,
+    build_identity_manifest,
     generate_verification_pairs,
 )
 
@@ -86,6 +87,23 @@ class ManifestBuilderTests(unittest.TestCase):
         self.assertIn("left_capture_type", pairs.columns)
         self.assertTrue((pairs.loc[pairs["is_match"] == 1, "pair_region_proxy"] != "mixed").all())
         self.assertTrue((pairs.loc[pairs["is_match"] == 0, "pair_region_proxy"] == "mixed").any())
+
+    def test_build_identity_manifest_uses_subject_dirs_and_skips_corrupt_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_dir = Path(tmp_dir) / "trainingdatapro__asian_kyc_photo_dataset"
+            subject_dir = dataset_dir / "files" / "12"
+            subject_dir.mkdir(parents=True, exist_ok=True)
+
+            Image.fromarray(np.full((6, 6, 3), 120, dtype=np.uint8)).save(subject_dir / "Selfie_1.jpg")
+            Image.fromarray(np.full((6, 6, 3), 140, dtype=np.uint8)).save(subject_dir / "ID_1.jpg")
+            (subject_dir / "broken.jpg").write_bytes(b"not_an_image")
+
+            frame = build_identity_manifest([dataset_dir])
+
+            self.assertEqual(len(frame), 2)
+            self.assertEqual(set(frame["capture_type"]), {"selfie", "document"})
+            self.assertEqual(set(frame["region_proxy"]), {"southeast_asia"})
+            self.assertEqual(len(frame["subject_id"].unique()), 1)
 
 
 if __name__ == "__main__":

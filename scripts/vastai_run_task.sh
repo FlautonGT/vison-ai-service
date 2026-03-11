@@ -25,6 +25,8 @@ ALLOW_NONMODIFIABLE="${ALLOW_NONMODIFIABLE:-${TASK_ALLOW_NONMODIFIABLE_DEFAULT}}
 TRAINING_VENV="${TRAINING_VENV:-${ROOT_DIR}/.venv-training}"
 TRAINING_PYTHON="${TRAINING_PYTHON:-${TRAINING_VENV}/bin/python}"
 PREPARE_FLAGS=(--task "${TASK}" --preferred-region "${PREFERRED_REGION}")
+MAX_DATASETS="${MAX_DATASETS:-}"
+FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-false}"
 
 if [ "${ALLOW_RESTRICTED}" = "true" ]; then
   PREPARE_FLAGS+=(--allow-restricted)
@@ -37,6 +39,12 @@ if [ "${ALLOW_NONCOMMERCIAL}" = "true" ]; then
 fi
 if [ "${ALLOW_NONMODIFIABLE}" = "true" ]; then
   PREPARE_FLAGS+=(--allow-nonmodifiable)
+fi
+if [ -n "${MAX_DATASETS}" ]; then
+  PREPARE_FLAGS+=(--max-datasets "${MAX_DATASETS}")
+fi
+if [ "${FORCE_DOWNLOAD}" = "true" ]; then
+  PREPARE_FLAGS+=(--force-download)
 fi
 
 cd "${ROOT_DIR}"

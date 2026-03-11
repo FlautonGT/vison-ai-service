@@ -75,6 +75,8 @@
         "subject_id",
         "selfie_vs_document_pairing"
       ],
+      "approx_sample_count": 75,
+      "approx_subject_count": 5,
       "region_coverage": [
         "southeast_asia",
         "asia"
@@ -109,6 +111,8 @@
         "subject_id",
         "selfie_vs_document_pairing"
       ],
+      "approx_sample_count": 160,
+      "approx_subject_count": 20,
       "region_coverage": [
         "global"
       ],
@@ -277,6 +281,7 @@
         "fake",
         "video_frame"
       ],
+      "approx_sample_count": 1000,
       "region_coverage": [
         "global"
       ],
@@ -312,6 +317,7 @@
         "gender",
         "age_group"
       ],
+      "approx_sample_count": 108501,
       "region_coverage": [
         "global",
         "asia",
@@ -349,6 +355,7 @@
         "gender",
         "ethnicity"
       ],
+      "approx_sample_count": 23708,
       "region_coverage": [
         "global",
         "asia"
@@ -512,14 +519,18 @@
       "scraped_or_curated": "curated",
       "task_fit": [
         "face_attributes",
-        "gender_classification"
+        "gender_classification",
+        "verification"
       ],
       "label_coverage": [
+        "identity",
         "eyeglasses",
         "wearing_hat",
         "gender",
         "many_face_attributes"
       ],
+      "approx_sample_count": 202599,
+      "approx_subject_count": 10177,
       "region_coverage": [
         "global"
       ],
@@ -555,6 +566,7 @@
         "hat",
         "face_parts"
       ],
+      "approx_sample_count": 30000,
       "region_coverage": [
         "global"
       ],

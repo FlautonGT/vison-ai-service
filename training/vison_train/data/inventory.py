@@ -53,6 +53,22 @@ class DatasetRecord:
     def status(self) -> str:
         return str(self.payload.get("status", "restricted"))
 
+    @property
+    def approx_sample_count(self) -> int:
+        value = self.payload.get("approx_sample_count", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def approx_subject_count(self) -> int:
+        value = self.payload.get("approx_subject_count", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
     def region_score(self, preferred_region: str) -> int:
         if preferred_region in self.region_coverage:
             return REGION_SCORES.get(preferred_region, 0) + 2
@@ -60,6 +76,24 @@ class DatasetRecord:
             if region in REGION_SCORES:
                 return REGION_SCORES[region]
         return 0
+
+
+def _scale_score(count: int) -> int:
+    if count <= 0:
+        return 0
+    if count >= 1_000_000:
+        return 6
+    if count >= 500_000:
+        return 5
+    if count >= 100_000:
+        return 4
+    if count >= 50_000:
+        return 3
+    if count >= 10_000:
+        return 2
+    if count >= 1_000:
+        return 1
+    return 0
 
 
 def load_inventory(path: str | Path | None = None) -> dict[str, Any]:
@@ -99,6 +133,9 @@ def select_datasets(
             score += 2
         if "subject_disjoint" in str(raw.get("recommended_split", "")):
             score += 1
+        score += _scale_score(record.approx_sample_count)
+        if task == "verification":
+            score += _scale_score(record.approx_subject_count)
 
         ranked.append(
             {
@@ -110,6 +147,8 @@ def select_datasets(
                     f"commercial_use_ok={record.commercial_use_ok}",
                     f"modifiable={record.modifiable}",
                     f"status={record.status}",
+                    f"approx_sample_count={record.approx_sample_count}",
+                    f"approx_subject_count={record.approx_subject_count}",
                     f"recommended_split={raw.get('recommended_split', 'unspecified')}",
                 ],
             }
