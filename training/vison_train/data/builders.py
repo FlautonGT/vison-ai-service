@@ -16,6 +16,7 @@ from PIL import Image
 from .manifests import save_manifest
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 REAL_TOKENS = {"real", "live", "bona_fide", "bonafide", "genuine", "authentic", "none"}
 FAKE_TOKENS = {"fake", "attack", "spoof", "synthetic", "ai", "deepfake", "replay", "print", "mask"}
 UTKFACE_RE = re.compile(r"^(\d+)_(\d)_(\d)_")
@@ -58,10 +59,10 @@ def _source_id(path: Path) -> str:
 
 
 def _detect_binary_label(path: Path) -> int | None:
-    tokens = {_slug(part) for part in path.parts}
-    if tokens & FAKE_TOKENS:
+    lowered = " ".join(_slug(part) for part in path.parts)
+    if any(token in lowered for token in FAKE_TOKENS):
         return 1
-    if tokens & REAL_TOKENS:
+    if any(token in lowered for token in REAL_TOKENS):
         return 0
     return None
 
@@ -71,6 +72,47 @@ def _detect_attack_type(path: Path) -> str:
     for token in ["print", "replay", "mask", "paper", "screen", "photo", "video", "synthetic"]:
         if token in lowered:
             return token
+    return "unknown"
+
+
+def _video_files(root: Path) -> list[Path]:
+    return [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_EXTS]
+
+
+def _extract_video_frame(video_path: Path, cache_dir: Path) -> Path | None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    frame_name = hashlib.md5(str(video_path.resolve()).encode("utf-8")).hexdigest()[:16] + ".jpg"
+    output_path = cache_dir / frame_name
+    if output_path.exists():
+        return output_path
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None
+    try:
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frame_count > 0:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, max(frame_count // 2, 0))
+        success, frame = capture.read()
+        if not success or frame is None:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            success, frame = capture.read()
+        if not success or frame is None:
+            return None
+        cv2.imwrite(str(output_path), frame)
+        return output_path
+    finally:
+        capture.release()
+
+
+def _country_to_region(country_code: str) -> str:
+    country = country_code.strip().upper()
+    if country == "ID":
+        return "indonesia"
+    if country in {"BN", "KH", "LA", "MM", "MY", "PH", "SG", "TH", "TL", "VN"}:
+        return "southeast_asia"
+    if country:
+        return "asia"
     return "unknown"
 
 
@@ -110,19 +152,110 @@ def build_deepfake_manifest(dataset_dirs: Iterable[str | Path]) -> pd.DataFrame:
 def build_pad_manifest(dataset_dirs: Iterable[str | Path]) -> pd.DataFrame:
     rows = []
     for dataset_dir in [Path(item).expanduser().resolve() for item in dataset_dirs]:
+        seen_paths: set[str] = set()
+        frame_cache = dataset_dir / ".frame_cache"
+
+        for csv_path in dataset_dir.rglob("asian_people.csv"):
+            frame = pd.read_csv(csv_path)
+            for _, row in frame.iterrows():
+                region_proxy = _country_to_region(str(row.get("country", "")))
+                selfie_rel = str(row.get("selfie_link", "")).lstrip("/")
+                video_rel = str(row.get("video_link", "")).lstrip("/")
+                selfie_path = next(
+                    (
+                        candidate
+                        for candidate in [
+                            csv_path.parent / "files" / selfie_rel,
+                            dataset_dir / "files" / selfie_rel,
+                            dataset_dir / selfie_rel,
+                        ]
+                        if candidate.exists()
+                    ),
+                    None,
+                )
+                if selfie_path is not None:
+                    selfie_str = str(selfie_path.resolve())
+                    if selfie_str not in seen_paths:
+                        rows.append(
+                            {
+                                "image_path": selfie_str,
+                                "is_attack": 0,
+                                "attack_type": "bona_fide",
+                                "source_dataset": dataset_dir.name,
+                                "region_proxy": region_proxy,
+                            }
+                        )
+                        seen_paths.add(selfie_str)
+
+                video_path = next(
+                    (
+                        candidate
+                        for candidate in [
+                            csv_path.parent / "files" / video_rel,
+                            dataset_dir / "files" / video_rel,
+                            dataset_dir / video_rel,
+                        ]
+                        if candidate.exists()
+                    ),
+                    None,
+                )
+                if video_path is None:
+                    continue
+                frame_path = _extract_video_frame(video_path.resolve(), frame_cache)
+                if frame_path is None:
+                    continue
+                frame_str = str(frame_path.resolve())
+                if frame_str in seen_paths:
+                    continue
+                rows.append(
+                    {
+                        "image_path": frame_str,
+                        "is_attack": 0,
+                        "attack_type": "bona_fide",
+                        "source_dataset": dataset_dir.name,
+                        "region_proxy": region_proxy,
+                    }
+                )
+                seen_paths.add(frame_str)
+
         for image_path in _list_images(dataset_dir):
             label = _detect_binary_label(image_path)
             if label is None:
                 continue
+            image_str = str(image_path.resolve())
+            if image_str in seen_paths:
+                continue
             rows.append(
                 {
-                    "image_path": str(image_path),
+                    "image_path": image_str,
                     "is_attack": int(label),
                     "attack_type": _detect_attack_type(image_path) if int(label) == 1 else "bona_fide",
                     "source_dataset": dataset_dir.name,
                     "region_proxy": "unknown",
                 }
             )
+            seen_paths.add(image_str)
+
+        for video_path in _video_files(dataset_dir):
+            label = _detect_binary_label(video_path)
+            if label is None:
+                continue
+            frame_path = _extract_video_frame(video_path.resolve(), frame_cache)
+            if frame_path is None:
+                continue
+            frame_str = str(frame_path.resolve())
+            if frame_str in seen_paths:
+                continue
+            rows.append(
+                {
+                    "image_path": frame_str,
+                    "is_attack": int(label),
+                    "attack_type": _detect_attack_type(video_path) if int(label) == 1 else "bona_fide",
+                    "source_dataset": dataset_dir.name,
+                    "region_proxy": "unknown",
+                }
+            )
+            seen_paths.add(frame_str)
     return pd.DataFrame(rows)
 
 
