@@ -12,6 +12,8 @@ S3_BUCKET="${S3_BUCKET:-}"
 S3_REGION="${S3_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"
 S3_PREFIX="${S3_PREFIX:-vison-training}"
 S3_SYNC_ROOT="${S3_SYNC_ROOT:-/workspace}"
+RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
+S3_RUN_PREFIX="${S3_PREFIX%/}/${RUN_STAMP}"
 
 mkdir -p "${LOG_ROOT}" "${ARTIFACT_ROOT}"
 cd "${ROOT_DIR}"
@@ -74,7 +76,7 @@ sync_s3() {
     return 0
   fi
 
-  local task_prefix="${S3_PREFIX%/}/${task}"
+  local task_prefix="${S3_RUN_PREFIX}/${task}"
   run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/s3_upload.py \
     --bucket "${S3_BUCKET}" \
     --region "${S3_REGION}" \

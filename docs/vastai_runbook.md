@@ -151,10 +151,10 @@ AWS_ACCESS_KEY_ID=<your-key>
 AWS_SECRET_ACCESS_KEY=<your-secret>
 ```
 
-The fast unattended queue uploads task logs, the main queue log, the summary TSV, `runs/<task>`, and `/workspace/artifacts/<task>` under:
+The fast unattended queue uploads task logs, the main queue log, the summary TSV, `runs/<task>`, and `/workspace/artifacts/<task>` under a UTC-stamped run prefix:
 
 ```text
-${S3_PREFIX}/<task>/...
+${S3_PREFIX}/${RUN_STAMP}/<task>/...
 ```
 
 ## Local inference handoff
