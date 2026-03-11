@@ -7,6 +7,11 @@ LOG_ROOT="${LOG_ROOT:-/workspace/logs}"
 PREFERRED_REGION="${PREFERRED_REGION:-indonesia}"
 TRAINING_VENV="${TRAINING_VENV:-${ROOT_DIR}/.venv-training}"
 TRAINING_PYTHON="${TRAINING_PYTHON:-${TRAINING_VENV}/bin/python}"
+S3_UPLOAD_ENABLED="${S3_UPLOAD_ENABLED:-false}"
+S3_BUCKET="${S3_BUCKET:-}"
+S3_REGION="${S3_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"
+S3_PREFIX="${S3_PREFIX:-vison-training}"
+S3_SYNC_ROOT="${S3_SYNC_ROOT:-/workspace}"
 
 mkdir -p "${LOG_ROOT}" "${ARTIFACT_ROOT}"
 cd "${ROOT_DIR}"
@@ -58,6 +63,31 @@ run_logged() {
   return ${PIPESTATUS[0]}
 }
 
+s3_enabled() {
+  [ "${S3_UPLOAD_ENABLED}" = "true" ] && [ -n "${S3_BUCKET}" ]
+}
+
+sync_s3() {
+  local task="$1"
+  local task_log="$2"
+  if ! s3_enabled; then
+    return 0
+  fi
+
+  local task_prefix="${S3_PREFIX%/}/${task}"
+  run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/s3_upload.py \
+    --bucket "${S3_BUCKET}" \
+    --region "${S3_REGION}" \
+    --root "${S3_SYNC_ROOT}" \
+    --key-prefix "${task_prefix}" \
+    --skip-missing \
+    --path "${task_log}" \
+    --path "${MAIN_LOG}" \
+    --path "${SUMMARY_PATH}" \
+    --path "${ARTIFACT_ROOT}/${task}" \
+    --path "${ROOT_DIR}/runs/${task}"
+}
+
 echo -e "task\tstatus\tfailed_steps" > "${SUMMARY_PATH}"
 
 overall_failures=0
@@ -91,6 +121,11 @@ for task in "${TASKS[@]}"; do
     --task "${task}" \
     --output-dir "${ARTIFACT_ROOT}/${task}"; then
     failed_steps+=("collect")
+  fi
+
+  if ! sync_s3 "${task}" "${task_log}"; then
+    failed_steps+=("s3_sync")
+    echo "=== $(date -Iseconds) S3 sync failed for ${task} ===" | tee -a "${task_log}" "${MAIN_LOG}"
   fi
 
   if [ "${#failed_steps[@]}" -eq 0 ]; then

@@ -138,6 +138,25 @@ Collected handoff bundle:
 - `/workspace/artifacts/<task>/reports`
 - `/workspace/artifacts/<task>/exports`
 
+## Optional S3 sync
+
+If you want logs and artifacts copied to S3 during the run, set these in `.env.training`:
+
+```bash
+S3_UPLOAD_ENABLED=true
+S3_BUCKET=<your-bucket>
+S3_REGION=ap-southeast-1
+S3_PREFIX=vison-training
+AWS_ACCESS_KEY_ID=<your-key>
+AWS_SECRET_ACCESS_KEY=<your-secret>
+```
+
+The fast unattended queue uploads task logs, the main queue log, the summary TSV, `runs/<task>`, and `/workspace/artifacts/<task>` under:
+
+```text
+${S3_PREFIX}/<task>/...
+```
+
 ## Local inference handoff
 
 Use the exported ONNX file plus the generated export manifest to map the artifact into the existing local env vars:
