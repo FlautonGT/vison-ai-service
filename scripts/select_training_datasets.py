@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -11,7 +13,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from training.vison_train.cli import main as training_main
+PREPARE_TASK_PATH = ROOT_DIR / "scripts" / "vastai_prepare_task.py"
+SPEC = importlib.util.spec_from_file_location("vastai_prepare_task", PREPARE_TASK_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"Unable to load {PREPARE_TASK_PATH}")
+vastai_prepare_task = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(vastai_prepare_task)
 
 
 def main() -> int:
@@ -23,25 +30,23 @@ def main() -> int:
     parser.add_argument("--allow-restricted", action="store_true")
     parser.add_argument("--allow-fallback", action="store_true")
     parser.add_argument("--allow-rejected", action="store_true")
+    parser.add_argument("--inventory", default="configs/datasets/dataset_inventory.json")
+    parser.add_argument("--max-datasets", type=int, default=4)
     args = parser.parse_args()
-    argv = [
-        "select-datasets",
-        "--task",
-        args.task,
-        "--preferred-region",
-        args.preferred_region,
-    ]
-    if args.allow_noncommercial:
-        argv.append("--allow-noncommercial")
-    if args.allow_nonmodifiable:
-        argv.append("--allow-nonmodifiable")
-    if args.allow_restricted:
-        argv.append("--allow-restricted")
-    if args.allow_fallback:
-        argv.append("--allow-fallback")
-    if args.allow_rejected:
-        argv.append("--allow-rejected")
-    return training_main(argv)
+    selected = vastai_prepare_task._select(args.task, args)
+    payload = {
+        "task": args.task,
+        "preferred_region": args.preferred_region,
+        "constraints": {
+            "commercial_use_ok": not args.allow_noncommercial,
+            "modifiable": not args.allow_nonmodifiable,
+            "allowed_statuses": vastai_prepare_task._allowed_statuses(args),
+        },
+        "regional_assessment": vastai_prepare_task._regional_assessment(args.task, selected),
+        "results": selected,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
