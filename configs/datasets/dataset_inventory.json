@@ -125,6 +125,40 @@
       "recommended_split": "subject_disjoint"
     },
     {
+      "id": "meln1337/casia-webface-detected-and-aligned",
+      "title": "CASIA-WebFace Detected and Aligned",
+      "source": "Kaggle mirror of academic dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/meln1337/casia-webface-detected-and-aligned",
+      "download": {
+        "kaggle_ref": "meln1337/casia-webface-detected-and-aligned"
+      },
+      "license": "Mirror of CASIA-WebFace academic dataset; treat as restricted unless upstream terms are reviewed",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Aligned mirror of CASIA-WebFace for face recognition research.",
+      "collection_method": "Academic curated face recognition dataset.",
+      "scraped_or_curated": "curated",
+      "task_fit": [
+        "verification"
+      ],
+      "label_coverage": [
+        "subject_id"
+      ],
+      "approx_sample_count": 494414,
+      "approx_subject_count": 10575,
+      "region_coverage": [
+        "global",
+        "asia"
+      ],
+      "regional_relevance": "Large-scale fallback for embedding training, but not Southeast Asia focused.",
+      "identity_leakage_risk": "High unless split by subject",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Research/evaluation only unless upstream terms are explicitly accepted.",
+      "status": "restricted",
+      "recommended_split": "subject_disjoint"
+    },
+    {
       "id": "trainingdatapro/asian-people-liveness-detection-video-dataset",
       "title": "Asian People Liveness Detection Video Dataset",
       "source": "Kaggle mirror of vendor dataset",
@@ -519,18 +553,15 @@
       "scraped_or_curated": "curated",
       "task_fit": [
         "face_attributes",
-        "gender_classification",
-        "verification"
+        "gender_classification"
       ],
       "label_coverage": [
-        "identity",
         "eyeglasses",
         "wearing_hat",
         "gender",
         "many_face_attributes"
       ],
       "approx_sample_count": 202599,
-      "approx_subject_count": 10177,
       "region_coverage": [
         "global"
       ],

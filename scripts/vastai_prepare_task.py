@@ -43,8 +43,8 @@ TASK_QUERY_MAP = {
 TASK_PREFERRED_DATASETS = {
     "verification": [
         "trainingdatapro/asian-kyc-photo-dataset",
+        "meln1337/casia-webface-detected-and-aligned",
         "axondata/selfie-and-official-id-photo-dataset-18k-images",
-        "jessicali9530/celeba-dataset",
     ],
     "passive_pad": [
         "trainingdatapro/asian-people-liveness-detection-video-dataset",

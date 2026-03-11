@@ -441,6 +441,8 @@ def build_identity_manifest(dataset_dirs: Iterable[str | Path], min_images_per_s
             images = _valid_images(leaf_dir.iterdir()) if leaf_dir.exists() else []
             if len(images) < min_images_per_subject:
                 continue
+            if len(images) > 512:
+                continue
             _append_subject_rows(
                 rows,
                 dataset_dir,
