@@ -15,7 +15,7 @@ ALLOW_FALLBACK="${ALLOW_FALLBACK:-true}"
 TASK_ALLOW_NONCOMMERCIAL_DEFAULT="false"
 TASK_ALLOW_NONMODIFIABLE_DEFAULT="false"
 case "${TASK}" in
-  passive_pad|verification|face_parser)
+  passive_pad|verification|age_gender|face_attributes|face_quality|deepfake|face_parser)
     TASK_ALLOW_NONCOMMERCIAL_DEFAULT="true"
     TASK_ALLOW_NONMODIFIABLE_DEFAULT="true"
     ;;

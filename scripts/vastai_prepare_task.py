@@ -61,6 +61,10 @@ TASK_PREFERRED_DATASETS = {
         "jangedoo/utkface-new",
         "arashnic/faces-age-detection-dataset",
     ],
+    "deepfake": [
+        "xhlulu/140k-real-and-fake-faces",
+        "kshitizbhargava/deepfake-face-images",
+    ],
     "face_attributes": [
         "jessicali9530/celeba-dataset",
         "janwidziski/face-obstructions",

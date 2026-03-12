@@ -52,10 +52,10 @@ TASKS=(
 declare -A EXTRA_PREPARE_FLAGS=(
   [verification]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
   [passive_pad]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
-  [age_gender]="--allow-restricted --allow-fallback"
+  [age_gender]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
   [face_attributes]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
-  [face_quality]="--allow-restricted --allow-fallback"
-  [deepfake]="--allow-restricted --allow-fallback"
+  [face_quality]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
+  [deepfake]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
   [face_parser]="--allow-noncommercial --allow-nonmodifiable --allow-restricted --allow-fallback"
 )
 

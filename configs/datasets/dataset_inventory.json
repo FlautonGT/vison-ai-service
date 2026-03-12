@@ -293,6 +293,40 @@
       "recommended_split": "identity_or_source_disjoint"
     },
     {
+      "id": "xhlulu/140k-real-and-fake-faces",
+      "title": "140K Real and Fake Faces",
+      "source": "Kaggle dataset",
+      "kaggle_url": "https://www.kaggle.com/datasets/xhlulu/140k-real-and-fake-faces",
+      "download": {
+        "kaggle_ref": "xhlulu/140k-real-and-fake-faces"
+      },
+      "license": "Unknown from mirror metadata; verify before production use",
+      "commercial_use_ok": false,
+      "modifiable": false,
+      "provenance": "Merged real-vs-generated face dataset mirror.",
+      "collection_method": "Dataset aggregation.",
+      "scraped_or_curated": "mixed",
+      "task_fit": [
+        "deepfake_detection",
+        "synthetic_face_detection"
+      ],
+      "label_coverage": [
+        "real",
+        "fake"
+      ],
+      "approx_sample_count": 140000,
+      "region_coverage": [
+        "global"
+      ],
+      "regional_relevance": "Large-scale fallback for deepfake fine-tuning, not Southeast Asia specific.",
+      "identity_leakage_risk": "Moderate if source identities overlap across splits",
+      "duplicate_risk": "Moderate",
+      "minors_sensitive_risk_note": "Unknown",
+      "usage_constraints": "Use only after Kaggle page and upstream provenance review.",
+      "status": "restricted",
+      "recommended_split": "identity_or_source_disjoint"
+    },
+    {
       "id": "nanduncs/1000-videos-split",
       "title": "FaceForensics++ and Celeb-DF Combined Deepfake Data",
       "source": "Kaggle mirror",
