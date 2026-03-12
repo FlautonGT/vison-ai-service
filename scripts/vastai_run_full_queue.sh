@@ -15,6 +15,7 @@ S3_SYNC_ROOT="${S3_SYNC_ROOT:-/workspace}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 S3_RUN_PREFIX="${S3_PREFIX%/}/${RUN_STAMP}"
 FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-false}"
+SKIP_PREPARE="${SKIP_PREPARE:-false}"
 LOCK_FILE="${LOG_ROOT}/run_full_queue.lock"
 MAIN_LOG="${LOG_ROOT}/run_full_queue.log"
 SUMMARY_PATH="${LOG_ROOT}/run_full_queue_summary.tsv"
@@ -99,16 +100,18 @@ for task in "${TASKS[@]}"; do
   failed_steps=()
   echo "=== $(date -Iseconds) Starting ${task} ===" | tee -a "${task_log}" "${MAIN_LOG}"
 
-  # shellcheck disable=SC2206
-  prepare_flags=( ${EXTRA_PREPARE_FLAGS[$task]} )
-  if [ "${FORCE_DOWNLOAD}" = "true" ]; then
-    prepare_flags+=(--force-download)
-  fi
-  if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/vastai_prepare_task.py \
-    --task "${task}" \
-    --preferred-region "${PREFERRED_REGION}" \
-    "${prepare_flags[@]}"; then
-    failed_steps+=("prepare")
+  if [ "${SKIP_PREPARE}" != "true" ]; then
+    # shellcheck disable=SC2206
+    prepare_flags=( ${EXTRA_PREPARE_FLAGS[$task]} )
+    if [ "${FORCE_DOWNLOAD}" = "true" ]; then
+      prepare_flags+=(--force-download)
+    fi
+    if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/vastai_prepare_task.py \
+      --task "${task}" \
+      --preferred-region "${PREFERRED_REGION}" \
+      "${prepare_flags[@]}"; then
+      failed_steps+=("prepare")
+    fi
   fi
 
   if ! run_logged "${task_log}" "${TRAINING_PYTHON}" scripts/train_pipeline.py --task "${task}"; then
